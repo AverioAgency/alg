@@ -4,31 +4,86 @@
 # Nimmt die IDs aus jedem Schritt selbst mit, statt sie von Hand kopieren zu
 # lassen - das Einsetzen von <id from step 1> ist die haeufigste Fehlerquelle.
 #
+# Laeuft standardmaessig IM api-Container gegen localhost:3000. Grund: der Server
+# liegt hinter NAT und kann seine eigene oeffentliche Domain nicht erreichen
+# (fehlendes Hairpin-NAT), waehrend sie von aussen einwandfrei antwortet. Ein
+# Aufruf gegen ALG_URL wuerde hier also scheitern, ohne dass etwas kaputt ist.
+#
 # Aufruf auf dem Server:
 #   docker compose exec api node /app/packages/db/dist/smoke.js   # Token holen
-#   export ALG_URL=... WS=... TOKEN=...                           # ausgegebene Zeilen
+#   export WS=... TOKEN=...                                       # ausgegebene Zeilen
+#   bash infra/scripts/smoke-run.sh
+#
+# Von aussen (eigener Rechner) stattdessen mit Domain:
+#   export ALG_URL=https://alg-nexoro.averio.agency WS=... TOKEN=...
 #   bash infra/scripts/smoke-run.sh
 
 set -uo pipefail
 
-: "${ALG_URL:?ALG_URL nicht gesetzt - siehe Ausgabe von smoke.js}"
-: "${WS:?WS nicht gesetzt}"
-: "${TOKEN:?TOKEN nicht gesetzt}"
+: "${WS:?WS nicht gesetzt - siehe Ausgabe von smoke.js}"
+: "${TOKEN:?TOKEN nicht gesetzt - siehe Ausgabe von smoke.js}"
 
-AUTH=(-H "authorization: Bearer ${TOKEN}" -H "x-workspace-id: ${WS}")
-JSON=(-H "content-type: application/json")
+if [ "${TOKEN}" = "eyJhbGci..." ] || [ ${#TOKEN} -lt 100 ]; then
+  printf '\033[31mTOKEN sieht nach dem Platzhalter aus (%s Zeichen).\033[0m\n' "${#TOKEN}" >&2
+  printf 'Den vollstaendigen Wert aus der Ausgabe von smoke.js einsetzen.\n' >&2
+  exit 1
+fi
+
+# Ohne ALG_URL: durch den Container, damit NAT keine Rolle spielt.
+if [ -n "${ALG_URL:-}" ]; then
+  MODE="direkt gegen ${ALG_URL}"
+  call() {
+    local method="$1" path="$2"
+    shift 2
+    curl -s --max-time 30 -X "$method" "${ALG_URL}${path}" \
+      -H "authorization: Bearer ${TOKEN}" \
+      -H "x-workspace-id: ${WS}" \
+      -H "content-type: application/json" "$@"
+  }
+else
+  MODE="im api-Container gegen localhost:3000"
+  call() {
+    local method="$1" path="$2" data=""
+    shift 2
+    # -d <json> aus den restlichen Argumenten herausziehen
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -d) data="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    docker compose exec -T api node -e "
+      const body = ${data:-null} === null ? undefined : JSON.stringify(${data:-null})
+      fetch('http://localhost:3000${path}', {
+        method: '${method}',
+        headers: {
+          authorization: 'Bearer ${TOKEN}',
+          'x-workspace-id': '${WS}',
+          'content-type': 'application/json',
+        },
+        ...(body ? { body } : {}),
+      })
+        .then((r) => r.text())
+        .then((t) => process.stdout.write(t))
+        .catch((e) => { process.stderr.write(String(e)); process.exit(1) })
+    "
+  }
+fi
 
 hr() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 die() { printf '\n\033[31mFEHLGESCHLAGEN: %s\033[0m\n' "$1" >&2; exit 1; }
 
 command -v jq >/dev/null || die "jq fehlt (apt install jq)"
 
+printf '\033[1mModus:\033[0m %s\n' "$MODE"
+
 hr "0. Erreichbarkeit"
-HEALTH=$(curl -s --max-time 10 "${ALG_URL}/v1/health") || die "API nicht erreichbar unter ${ALG_URL}"
-echo "$HEALTH" | jq -c '{status, version, sendingEnabled}' || die "Antwort ist kein JSON: ${HEALTH}"
+HEALTH=$(call GET /v1/health) || die "API antwortet nicht"
+echo "$HEALTH" | jq -c '{status, version, sendingEnabled}' 2>/dev/null \
+  || die "Antwort ist kein JSON: ${HEALTH}"
 
 hr "1. Suche anlegen"
-SEARCH=$(curl -s -X POST "${ALG_URL}/v1/searches" "${AUTH[@]}" "${JSON[@]}" -d '{
+SEARCH=$(call POST /v1/searches -d '{
   "name": "Restaurants Linz (Smoke)",
   "spec": {
     "targetType": "local_business",
@@ -43,7 +98,7 @@ SEARCH=$(curl -s -X POST "${ALG_URL}/v1/searches" "${AUTH[@]}" "${JSON[@]}" -d '
   }
 }')
 
-SEARCH_ID=$(echo "$SEARCH" | jq -r '.id // empty')
+SEARCH_ID=$(echo "$SEARCH" | jq -r '.id // empty' 2>/dev/null)
 if [ -z "$SEARCH_ID" ]; then
   echo "$SEARCH" | jq . 2>/dev/null || echo "$SEARCH"
   die "keine Such-ID erhalten (Token abgelaufen? Workspace falsch?)"
@@ -51,39 +106,38 @@ fi
 echo "  search_id: ${SEARCH_ID}"
 
 hr "2. Lauf starten"
-RUN=$(curl -s -X POST "${ALG_URL}/v1/searches/${SEARCH_ID}/run" "${AUTH[@]}" "${JSON[@]}" -d '{}')
-RUN_ID=$(echo "$RUN" | jq -r '.run_id // empty')
+RUN=$(call POST "/v1/searches/${SEARCH_ID}/run" -d '{}')
+RUN_ID=$(echo "$RUN" | jq -r '.run_id // empty' 2>/dev/null)
 if [ -z "$RUN_ID" ]; then
   echo "$RUN" | jq . 2>/dev/null || echo "$RUN"
   die "keine run_id erhalten"
 fi
 echo "  run_id: ${RUN_ID}"
-echo "  status: $(echo "$RUN" | jq -r '.status')"
 
 hr "3. Fortschritt (max. 120 s)"
 # Overpass ist ein geteilter, kostenloser Dienst - der erste Aufruf dauert
 # gelegentlich eine Weile, deshalb grosszuegig gewartet.
+STATUS="?"
 for i in $(seq 1 60); do
-  CURRENT=$(curl -s "${ALG_URL}/v1/runs/${RUN_ID}" "${AUTH[@]}")
-  STATUS=$(echo "$CURRENT" | jq -r '.status // "?"')
-  FOUND=$(echo "$CURRENT" | jq -r '.entities_found // 0')
+  CURRENT=$(call GET "/v1/runs/${RUN_ID}")
+  STATUS=$(echo "$CURRENT" | jq -r '.status // "?"' 2>/dev/null)
+  FOUND=$(echo "$CURRENT" | jq -r '.entities_found // 0' 2>/dev/null)
   printf '\r  [%3ds] status=%-10s gefunden=%s   ' "$((i * 2))" "$STATUS" "$FOUND"
 
   case "$STATUS" in
-    completed|failed|cancelled) break ;;
+    completed | failed | cancelled) break ;;
   esac
   sleep 2
 done
 echo
 
 hr "4. Ergebnis des Laufs"
-FINAL=$(curl -s "${ALG_URL}/v1/runs/${RUN_ID}" "${AUTH[@]}")
+FINAL=$(call GET "/v1/runs/${RUN_ID}")
 echo "$FINAL" | jq '{status, entities_found, entities_new, entities_duplicate, cost_eur, error}'
 
-FINAL_STATUS=$(echo "$FINAL" | jq -r '.status')
+FINAL_STATUS=$(echo "$FINAL" | jq -r '.status' 2>/dev/null)
 if [ "$FINAL_STATUS" = "failed" ]; then
   echo
-  echo "Fehlerdetails:"
   echo "$FINAL" | jq '.error'
   echo
   echo "Worker-Log:  docker compose logs worker --tail 50"
@@ -91,17 +145,18 @@ if [ "$FINAL_STATUS" = "failed" ]; then
 fi
 
 hr "5. Was in der Datenbank gelandet ist"
-COMPANIES=$(curl -s "${ALG_URL}/v1/companies?limit=5" "${AUTH[@]}")
-echo "$COMPANIES" | jq '.data[] | {name, domain, phone, city: .address.city, postal_code: .address.postal_code}'
+COMPANIES=$(call GET "/v1/companies?limit=5")
+echo "$COMPANIES" \
+  | jq '.data[] | {name, domain, phone, city: .address.city, postal_code: .address.postal_code}'
 
-COUNT=$(echo "$COMPANIES" | jq '.data | length')
+COUNT=$(echo "$COMPANIES" | jq '.data | length' 2>/dev/null || echo 0)
 echo
 echo "  angezeigt: ${COUNT} (erste Seite)"
 
 hr "6. Provenienz einer Firma"
-FIRST_ID=$(echo "$COMPANIES" | jq -r '.data[0].id // empty')
+FIRST_ID=$(echo "$COMPANIES" | jq -r '.data[0].id // empty' 2>/dev/null)
 if [ -n "$FIRST_ID" ]; then
-  curl -s "${ALG_URL}/v1/companies/${FIRST_ID}" "${AUTH[@]}" \
+  call GET "/v1/companies/${FIRST_ID}" \
     | jq '{name, sources: [.sources[] | {source_id, external_id}]}'
 fi
 

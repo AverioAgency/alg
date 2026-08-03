@@ -118,21 +118,25 @@ Workspace and token ready. Valid for 24 hours.
   WORKSPACE_ID  ${workspaceId}
   USER_ID       ${userId}
 
-Copy these three lines, then start the run:
+ON THE SERVER - copy these two lines, then start the run:
 
-export ALG_URL="${baseUrl}"
 export WS="${workspaceId}"
 export TOKEN="${token}"
 
 bash infra/scripts/smoke-run.sh
 
+Do NOT set ALG_URL here. The server sits behind NAT and cannot reach its own
+public domain, so the script goes through the api container instead. Setting
+ALG_URL would make it fail on a problem that does not exist.
+
+FROM YOUR OWN MACHINE - there the domain works, so add it:
+
+export ALG_URL="${baseUrl}"
+export WS="${workspaceId}"
+export TOKEN="${token}"
+
 The script creates a search, starts it, waits for completion and prints what
 landed in the database - carrying the ids between steps itself.
-
-To watch progress live in a second shell:
-
-  curl -N "$ALG_URL/v1/streams/<run_id>" \\
-    -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS"
 `)
   } catch (error) {
     console.error("Bootstrap failed:", error instanceof Error ? error.message : error)
