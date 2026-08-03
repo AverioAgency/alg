@@ -1,4 +1,14 @@
-# ALG local / single-host stack.
+# ALG single-host stack.
+#
+# This stack brings NO Traefik of its own. The Averio server already runs one, and
+# a second instance would fight it for ports 80/443. The api service instead joins
+# the existing proxy network as an external network and is routed purely by labels.
+#
+# Configure in .env:
+#   TRAEFIK_NETWORK   name of the running Traefik's docker network (default: proxy)
+#   TRAEFIK_ENTRYPOINT / TRAEFIK_CERTRESOLVER  must match that Traefik's config
+#   ALG_DOMAIN        hostname to route (default: alg-nexoro.averio.agency)
+# Find the network name with:  docker network ls
 #
 # Note on Supabase: this project uses a managed self-hosted Supabase at
 # db-alg-nexoro.averio.agency as its Postgres. The `postgres` service below is for
@@ -9,30 +19,23 @@
 name: alg
 
 services:
-  traefik:
-    image: traefik:v3.3
-    restart: unless-stopped
-    command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-      # TLS stays off until the staging domain is pointed here. To enable:
-      # uncomment the resolver below plus the websecure labels on the api service.
-      # - --certificatesresolvers.le.acme.email=office@nexoro.net
-      # - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-      # - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
-      - --accesslog=true
-      - --log.level=INFO
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # Read-only: Traefik only needs to observe container labels.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik_acme:/letsencrypt
+  # One-shot migration job. Run it before starting the stack:
+  #   docker compose run --rm migrate
+  # Kept as a separate service rather than an api entrypoint step so that two API
+  # replicas can never race each other applying the same migration.
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.api
+    profiles: ["tools"]
+    env_file: ../.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+    working_dir: /app/packages/db
+    command: ["node", "dist/migrate.js"]
     networks:
-      - edge
+      - internal
+    restart: "no"
 
   api:
     build:
@@ -51,7 +54,7 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - edge
+      - proxy
       - internal
       - scraping
     healthcheck:
@@ -68,14 +71,14 @@ services:
       start_period: 20s
     labels:
       - traefik.enable=true
-      - traefik.docker.network=alg_edge
-      - traefik.http.routers.alg-api.rule=Host(`alg-nexoro.averio.agency`)
-      - traefik.http.routers.alg-api.entrypoints=web
+      # Must name the shared proxy network: the api container sits on three networks
+      # and Traefik would otherwise pick the wrong address to route to.
+      - traefik.docker.network=${TRAEFIK_NETWORK:-edge}
+      - traefik.http.routers.alg-api.rule=Host(`${ALG_DOMAIN:-alg-nexoro.averio.agency}`)
+      - traefik.http.routers.alg-api.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.alg-api.tls=true
+      - traefik.http.routers.alg-api.tls.certresolver=${TRAEFIK_CERTRESOLVER:-le}
       - traefik.http.services.alg-api.loadbalancer.server.port=3000
-      # Enable once ACME is configured:
-      # - traefik.http.routers.alg-api-secure.rule=Host(`alg-nexoro.averio.agency`)
-      # - traefik.http.routers.alg-api-secure.entrypoints=websecure
-      # - traefik.http.routers.alg-api-secure.tls.certresolver=le
 
   worker:
     build:
@@ -155,10 +158,14 @@ volumes:
   alg_storage:
   redis_data:
   postgres_data:
-  traefik_acme:
 
 networks:
-  edge:
+  # The Averio server's existing Traefik network. Declared external so this stack
+  # joins it instead of creating a competing one - `docker compose up` fails with a
+  # clear error if the name is wrong, which is better than silently not routing.
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-edge}
   internal:
   # The scraper's own segment. api and worker join it explicitly when M2 wires up
   # the internal HTTP call; nothing else is reachable from here.

@@ -11,12 +11,6 @@ services:
       NODE_ENV: staging
       ALG_SENDING_ENABLED: "false"
       LOG_LEVEL: debug
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=alg_edge
-      - traefik.http.routers.alg-api.rule=Host(`alg-nexoro.averio.agency`)
-      - traefik.http.routers.alg-api.entrypoints=web
-      - traefik.http.services.alg-api.loadbalancer.server.port=3000
 
   worker:
     environment:

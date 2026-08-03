@@ -1,0 +1,73 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.1",
+  "elements": [
+    {
+      "type": "node",
+      "id": 246819820,
+      "lat": 48.3060537,
+      "lon": 14.2865461,
+      "tags": {
+        "addr:city": "Linz",
+        "addr:country": "AT",
+        "addr:housenumber": "8",
+        "addr:postcode": "4020",
+        "addr:street": "Hauptplatz",
+        "amenity": "restaurant",
+        "cuisine": "austrian",
+        "name": "Gasthaus Zur Post",
+        "phone": "+43 732 771234",
+        "website": "https://www.gasthaus-zur-post.at"
+      }
+    },
+    {
+      "type": "way",
+      "id": 118273645,
+      "center": { "lat": 48.3011234, "lon": 14.2912345 },
+      "tags": {
+        "addr:city": "Linz",
+        "addr:postcode": "4020",
+        "addr:street": "Landstraße",
+        "amenity": "restaurant",
+        "contact:email": "office@bistro-beispiel.at",
+        "contact:phone": "0732/998877",
+        "name": "Bistro Beispiel"
+      }
+    },
+    {
+      "type": "node",
+      "id": 999888777,
+      "lat": 48.3,
+      "lon": 14.29,
+      "tags": {
+        "amenity": "restaurant",
+        "cuisine": "pizza"
+      }
+    },
+    {
+      "type": "relation",
+      "id": 5566778,
+      "center": { "lat": 48.2999, "lon": 14.2888 },
+      "tags": {
+        "amenity": "restaurant",
+        "name": "Restaurant Mühlviertler Hof",
+        "operator": "Mühlviertler Gastro GmbH",
+        "addr:city": "Linz",
+        "addr:postcode": "4040",
+        "website": "www.muehlviertler-hof.at"
+      }
+    },
+    {
+      "type": "node",
+      "id": 111222333,
+      "lat": 48.3055,
+      "lon": 14.286,
+      "tags": {
+        "amenity": "cafe",
+        "brand": "Café Central",
+        "addr:city": "Linz",
+        "addr:postcode": "4020"
+      }
+    }
+  ]
+}

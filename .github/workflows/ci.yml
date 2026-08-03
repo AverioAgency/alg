@@ -98,5 +98,8 @@ jobs:
       - name: Validate compose files
         run: |
           cp .env.example .env
+          # The proxy network is external on the real host (the server's existing
+          # Traefik owns it), so it must exist before compose resolves the file.
+          docker network create edge || true
           docker compose -f infra/docker-compose.yml config >/dev/null
           docker compose -f infra/docker-compose.yml -f infra/docker-compose.staging.yml config >/dev/null

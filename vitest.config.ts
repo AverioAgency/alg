@@ -21,6 +21,10 @@ export default defineConfig({
       "@alg/shared": new URL("./packages/shared/src/index.ts", import.meta.url).pathname,
       "@alg/db": new URL("./packages/db/src/index.ts", import.meta.url).pathname,
       "@alg/core": new URL("./packages/core/src/index.ts", import.meta.url).pathname,
+      "@alg/adapters-discovery": new URL(
+        "./packages/adapters/discovery/src/index.ts",
+        import.meta.url
+      ).pathname,
     },
   },
 })
