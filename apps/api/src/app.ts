@@ -17,6 +17,8 @@ import { createHealthRouter } from "./routes/health.js"
 import { createCompaniesRouter } from "./routes/companies.js"
 import { createSearchesRouter } from "./routes/searches.js"
 import { createStreamsRouter } from "./routes/streams.js"
+import { createSignalsRouter } from "./routes/signals.js"
+import { buildSignalRegistry } from "@alg/adapters-signals"
 import { openApiDocument } from "./openapi.js"
 
 export interface AppOptions {
@@ -111,6 +113,12 @@ export function createApp(options: AppOptions): Express {
   app.use("/v1", createCompaniesRouter({ db }))
   app.use("/v1", createSearchesRouter({ db, discoveryQueue }))
   app.use("/v1", createStreamsRouter({ db }))
+
+  // One registry for the process: the crawler inside it holds the per-host rate
+  // limit, which only works if every request goes through the same instance.
+  const signalRegistry = buildSignalRegistry({ userAgent: env.ALG_USER_AGENT })
+  const enrichmentQueue = new Queue("enrichment", { connection: redis })
+  app.use("/v1", createSignalsRouter({ db, registry: signalRegistry, enrichmentQueue }))
 
   app.use(notFoundHandler)
   app.use(createErrorHandler(logger))

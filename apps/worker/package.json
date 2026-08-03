@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@alg/adapters-discovery": "workspace:*",
+    "@alg/adapters-signals": "workspace:*",
     "@alg/core": "workspace:*",
     "@alg/db": "workspace:*",
     "@alg/shared": "workspace:*",

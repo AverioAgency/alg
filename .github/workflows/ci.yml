@@ -60,9 +60,9 @@ jobs:
           rm -rf packages/*/dist packages/adapters/*/dist apps/*/dist
           find . -name '*.tsbuildinfo' -not -path './node_modules/*' -delete
           pnpm --filter @alg/shared --filter @alg/db --filter @alg/core \
-               --filter @alg/adapters-discovery --filter @alg/api build
+               --filter @alg/adapters-discovery --filter @alg/adapters-signals --filter @alg/api build
           pnpm --filter @alg/shared --filter @alg/db --filter @alg/core \
-               --filter @alg/adapters-discovery --filter @alg/worker build
+               --filter @alg/adapters-discovery --filter @alg/adapters-signals --filter @alg/worker build
           pnpm --filter @alg/shared --filter @alg/scraper build
 
       - name: Test

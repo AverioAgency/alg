@@ -5,6 +5,7 @@
     { "path": "./packages/db" },
     { "path": "./packages/core" },
     { "path": "./packages/adapters/discovery" },
+    { "path": "./packages/adapters/signals" },
     { "path": "./apps/api" },
     { "path": "./apps/worker" },
     { "path": "./apps/scraper" }

@@ -73,3 +73,34 @@ export {
   type RunDiscoveryResult,
   type ProgressEvent,
 } from "./discovery/run.js"
+export {
+  SignalRegistry,
+  UnknownProviderError,
+  CircularDependencyError,
+  DuplicateSignalError,
+  type ResolvedPlan,
+} from "./signals/registry.js"
+export {
+  planSignals,
+  estimateSignalCost,
+  toStages,
+  type PlanInput,
+  type SignalPlan,
+  type CostPreview,
+} from "./signals/planner.js"
+export { Crawler, RobotsDisallowedError, type CrawlerOptions } from "./crawler/crawler.js"
+export {
+  parseRobotsTxt,
+  isAllowed,
+  groupFor,
+  crawlDelayFor,
+  type RobotsTxt,
+} from "./crawler/robots.js"
+export {
+  enrichCompanies,
+  loadCompanySignals,
+  findStaleCompanies,
+  type EnrichOptions,
+  type EnrichResult,
+  type EnrichProgress,
+} from "./signals/enrich.js"

@@ -12,6 +12,7 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/core/package.json packages/core/
 COPY packages/adapters/discovery/package.json packages/adapters/discovery/
+COPY packages/adapters/signals/package.json packages/adapters/signals/
 COPY apps/worker/package.json apps/worker/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
@@ -21,7 +22,8 @@ COPY tsconfig.base.json tsconfig.json ./
 COPY packages/ packages/
 COPY apps/worker/ apps/worker/
 RUN pnpm --filter @alg/shared --filter @alg/db --filter @alg/core \
-    --filter @alg/adapters-discovery --filter @alg/worker build
+    --filter @alg/adapters-discovery --filter @alg/adapters-signals \
+    --filter @alg/worker build
 
 FROM base AS runtime
 ENV NODE_ENV=production
@@ -42,6 +44,9 @@ COPY --from=build --chown=node:node /app/packages/core/node_modules /app/package
 COPY --from=build --chown=node:node /app/packages/adapters/discovery/dist /app/packages/adapters/discovery/dist
 COPY --from=build --chown=node:node /app/packages/adapters/discovery/package.json /app/packages/adapters/discovery/
 COPY --from=build --chown=node:node /app/packages/adapters/discovery/node_modules /app/packages/adapters/discovery/node_modules
+COPY --from=build --chown=node:node /app/packages/adapters/signals/dist /app/packages/adapters/signals/dist
+COPY --from=build --chown=node:node /app/packages/adapters/signals/package.json /app/packages/adapters/signals/
+COPY --from=build --chown=node:node /app/packages/adapters/signals/node_modules /app/packages/adapters/signals/node_modules
 COPY --from=build --chown=node:node /app/apps/worker/dist /app/apps/worker/dist
 COPY --from=build --chown=node:node /app/apps/worker/package.json /app/apps/worker/
 COPY --from=build --chown=node:node /app/apps/worker/node_modules /app/apps/worker/node_modules

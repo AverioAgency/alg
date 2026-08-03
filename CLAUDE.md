@@ -33,15 +33,17 @@ it belongs in a provider, a rubric or a playbook instead.
 apps/
   api/        Express 5 server, routes, middleware, OpenAPI
   worker/     BullMQ consumers for every queue
-  scraper/    Playwright service, internal only, no public port (Playwright lands in M2)
+  scraper/    Internal service, no public port. Playwright is deferred - the
+              HTTP-based providers in M2 do not need it.
 packages/
   shared/     Zod schemas + types. ALSO CONSUMED BY THE FRONTEND.
   db/         Drizzle schema, migrations, withWorkspace guard
   core/       Domain logic: storage, kill switch, discovery (normalize, dedupe,
-              registry, orchestration); planner/scoring/sequences follow
+              orchestration), signals (registry, planner, enrichment), crawler
   adapters/
     discovery/  Overpass, Google Places, CSV import
-                signals/ and channels/ arrive with M2 and M5
+    signals/    web.presence, legal.impressum, web.techstack, contact.basic
+                channels/ arrives with M5
 infra/
   docker/     One Dockerfile per service
   scripts/    backup.sh, restore-test.sh, seed.ts
@@ -164,7 +166,31 @@ over SSE.
 Migration 0001 adds `searches`, `search_runs`, `search_run_events` and the dedupe
 provenance columns on `companies`.
 
-**M2 next** — the signal layer: provider registry with DAG resolution, demand-driven
-execution, a crawler respecting robots.txt with per-host rate limiting, the
-`contact.basic` / `legal.impressum` / `web.*` / `gmb` / `hiring` providers, and the
-Playwright service for `web.quality`.
+**M2 complete** — the signal layer. Nothing runs unless something references it.
+
+- **Registry + planner**: providers declare what they produce, depend on and cost.
+  `planSignals()` collects every reference from filters, rubric criteria and
+  template variables, resolves the dependency DAG and returns a topologically
+  sorted plan. A search that mentions no `web.*` signal produces an empty plan and
+  costs nothing — that is the M2 acceptance test, and it is what keeps a
+  market-research search free.
+- **Crawler**: robots.txt fetched once per host and honoured, one request per host
+  at a time with a configurable delay, Crawl-delay respected but capped. Every
+  request goes through `safeFetch`, so SSRF protection still applies.
+- **Providers**: `web.presence` (root of the web tree), `legal.impressum` (ECG §5
+  data — the most reliable contact source on an Austrian site), `web.techstack`
+  (data-driven fingerprints, a new CMS is a table entry not a code change),
+  `contact.basic` (consolidates contacts; Impressum beats directory data).
+- **Caching**: one row per company and provider, with a TTL from the provider and
+  its `provider_version`. A version bump re-runs even unexpired rows, because the
+  extraction logic changed.
+- **Endpoints**: `GET /v1/companies/:id/signals` with provenance,
+  `GET /v1/signals/schema`, `POST /v1/signals/preview` (resolves the plan and its
+  cost without running anything), `POST /v1/enrichments` → 202.
+
+`web.quality` is deliberately absent: it needs Playwright, which is deferred.
+Migration 0002 adds `enrichments` and `enrichment_runs`.
+
+**M3 next** — scoring: rubric CRUD, a rule evaluator with a full per-criterion
+breakdown, the LLM stage, `POST /v1/rubrics/suggest` and the calibration endpoint.
+Without an Anthropic key the rubric runs rule-only and `llm` stays null.
