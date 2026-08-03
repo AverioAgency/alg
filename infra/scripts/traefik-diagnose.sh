@@ -6,21 +6,44 @@ DOMAIN="${ALG_DOMAIN:-alg-nexoro.averio.agency}"
 
 hr() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
-hr "1. Zeigt der DNS-Name auf DIESEN Server?"
-SERVER_IP=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo "?")
+hr "1. Zeigt der DNS-Name dorthin, wo die anderen Dienste liegen?"
+# Nicht gegen ifconfig.me pruefen: hinter NAT liefert das die Gateway-Adresse,
+# nicht die des Servers. Der belastbare Vergleich ist eine Domain, die auf
+# diesem Host bereits funktioniert.
+REFERENCE_DOMAIN="${REFERENCE_DOMAIN:-db-alg-nexoro.averio.agency}"
+REF_IP=$(getent hosts "$REFERENCE_DOMAIN" | awk '{print $1}' | head -1)
 DNS_IP=$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1)
-echo "  Server-IP  : ${SERVER_IP}"
-echo "  DNS liefert: ${DNS_IP:-<nichts>}"
+echo "  ${DOMAIN}"
+echo "    -> ${DNS_IP:-<NXDOMAIN>}"
+echo "  ${REFERENCE_DOMAIN} (funktioniert bereits)"
+echo "    -> ${REF_IP:-<NXDOMAIN>}"
 if [ -z "$DNS_IP" ]; then
   echo "  -> BEFUND: Kein A-Record. Das allein erklaert HTTP 000."
-elif [ "$SERVER_IP" != "$DNS_IP" ]; then
-  echo "  -> BEFUND: DNS zeigt woanders hin (evtl. Cloudflare-Proxy?)."
+elif [ -n "$REF_IP" ] && [ "$DNS_IP" != "$REF_IP" ]; then
+  echo "  -> BEFUND: zeigt woanders hin als der funktionierende Dienst."
 else
-  echo "  -> ok"
+  echo "  -> ok, beide zeigen auf dieselbe Adresse"
 fi
 
 hr "2. Lauscht ueberhaupt jemand auf 443?"
 ss -tlnp 2>/dev/null | grep -E ':(80|443)\s' || echo "  -> BEFUND: niemand auf 80/443!"
+
+hr "2b. Ist der Server hinter NAT?"
+echo "  lokale IPv4:"
+ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print "    " $2}'
+if [ -n "$DNS_IP" ] && ip -4 addr show 2>/dev/null | grep -q "inet ${DNS_IP}/"; then
+  echo "  -> ${DNS_IP} liegt direkt auf diesem Host"
+else
+  echo "  -> ${DNS_IP:-die Ziel-IP} liegt NICHT auf diesem Host: NAT oder Router davor."
+  echo "     Port 443 muss dort auf diesen Server weitergeleitet sein."
+fi
+
+hr "2c. Erreicht man 443 ueber die oeffentliche Adresse? (Hairpin-NAT noetig)"
+if [ -n "$DNS_IP" ]; then
+  echo -n "  ${DNS_IP}:443 -> "
+  timeout 5 bash -c "</dev/tcp/${DNS_IP}/443" 2>/dev/null && echo "offen" \
+    || echo "refused/timeout (kann auch nur fehlendes Hairpin-NAT sein - von aussen testen!)"
+fi
 
 hr "3. Antwortet Traefik lokal? (umgeht DNS und Firewall)"
 echo -n "  https lokal: "
