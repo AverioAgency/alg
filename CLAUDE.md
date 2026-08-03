@@ -12,6 +12,11 @@ A human-readable reference of every endpoint is served at `GET /docs`
 (<https://alg-nexoro.averio.agency/docs>) — generated from the same OpenAPI
 document, so it cannot describe a route that does not exist.
 
+Two ways in, both ending at the same `req.ctx`: a Supabase JWT plus
+`x-workspace-id`, or — for the Nexoro PHP backend — a service token plus the
+acting user, with the workspace resolved from the subdomain. `infra/FRONTEND.md`
+has the integration guide.
+
 ## Core concepts
 
 - **Target type** (`local_business | company | person | list`) decides which
@@ -111,6 +116,25 @@ Things that will bite, roughly in order of how expensive the mistake is:
   anon key in circulation and the frontend never talks to the database. All
   authorization happens in the API layer. An RLS policy here would give false
   confidence and conflict with the service-role connection.
+- **`ALG_SERVICE_TOKEN` is a tenant boundary, not a convenience.** The Nexoro PHP
+  backend authenticates its own users and calls ALG server-to-server with this
+  secret, naming the acting user and tenant. Whoever holds it can act for any
+  workspace, which is sound only because it lives on a server we operate. It must
+  never reach a browser, and the hostname alone never grants anything — the
+  subdomain only _names_ a workspace, presenting the secret is what authorises
+  using it. Unset disables the whole path; there is deliberately no weaker
+  fallback. See `infra/FRONTEND.md`.
+- **A hostname is attacker-controlled input.** Anyone can send any `Host` header.
+  `tenantSlugFromHost()` in `@alg/shared` is strict on purpose: one label only
+  (so `nexoro.evil.nexoro.net` is not the `nexoro` tenant), a reserved-name list
+  (so `admin.nexoro.net` never becomes a workspace), and the first value only
+  when a proxy appends several. Auto-provisioning a workspace per subdomain is
+  only safe behind those checks — loosen one and an unknown host starts writing
+  rows.
+- **CORS defaults to closed, and `*` is ignored rather than honoured.** This API
+  serves lead data under GDPR; a wildcard on an authenticated origin is worth
+  more to an attacker than to us. Browsers also refuse `*` together with
+  credentials, so it would not even work.
 - **`withWorkspace()` is mandatory.** Every Drizzle query goes through it — it is
   the _only_ thing enforcing tenant isolation. The `alg/no-raw-drizzle-query`
   ESLint rule fails the build on a raw `db.select()`. Genuinely global queries use

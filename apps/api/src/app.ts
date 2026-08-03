@@ -10,6 +10,8 @@ import { type Logger } from "./logger.js"
 import { createAuthMiddleware } from "./middleware/auth.js"
 import { createErrorHandler, notFoundHandler } from "./middleware/error.js"
 import { createIdempotencyMiddleware } from "./middleware/idempotency.js"
+import { createCorsMiddleware } from "./middleware/cors.js"
+import { createServiceAuthMiddleware } from "./middleware/service-auth.js"
 import { createRateLimiters, ipRateLimit, workspaceRateLimit } from "./middleware/rate-limit.js"
 import { requestId } from "./middleware/request-id.js"
 import { createFilesRouter } from "./routes/files.js"
@@ -47,9 +49,18 @@ export function createApp(options: AppOptions): Express {
   app.use(
     helmet({
       contentSecurityPolicy: false, // API returns JSON; per-response CSP is set on file streams.
-      crossOriginResourcePolicy: { policy: "same-site" },
+      // cross-origin, not same-site: the Nexoro frontend is a different site, and
+      // same-site would have the browser discard responses CORS just allowed.
+      // CORP guards embedding (an <img> or <script> pulling a response); which
+      // origins may *read* it is decided by the allowlist below.
+      crossOriginResourcePolicy: { policy: "cross-origin" },
     })
   )
+
+  // Before the rate limiters: a preflight carries no credentials and must not
+  // consume a client's budget, and a 429 on OPTIONS surfaces in the browser as
+  // an opaque CORS failure rather than as rate limiting.
+  app.use(createCorsMiddleware({ origins: env.ALG_CORS_ORIGINS }))
   app.use(
     pinoHttp({
       logger,
@@ -133,7 +144,36 @@ export function createApp(options: AppOptions): Express {
     issuer: `${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1`,
   })
 
-  app.use("/v1", authenticate)
+  /**
+   * Two ways in, tried in order.
+   *
+   * The Nexoro PHP backend presents a service token and names the acting user;
+   * everyone else presents a Supabase JWT. Service auth runs first and only
+   * engages when its header is present, so a request without it reaches the
+   * Supabase path exactly as before.
+   */
+  app.use(
+    "/v1",
+    createServiceAuthMiddleware({
+      db,
+      serviceToken: env.ALG_SERVICE_TOKEN,
+      tenantDomain: env.ALG_TENANT_DOMAIN,
+      // Requested explicitly: an unseen subdomain becomes a workspace on first
+      // contact. The reserved-slug list and strict hostname parsing in
+      // @alg/shared are what keep that from being abusable.
+      autoProvision: true,
+    })
+  )
+
+  // Skipped when service auth already established a context - re-verifying would
+  // demand a Supabase token the PHP backend does not have.
+  app.use("/v1", (req, res, next) => {
+    if (req.ctx) {
+      next()
+      return
+    }
+    void authenticate(req, res, next)
+  })
   app.use("/v1", workspaceRateLimit(limiters))
   app.use("/v1", createIdempotencyMiddleware({ db }))
   app.use("/v1", filesRouter)

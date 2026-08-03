@@ -86,6 +86,38 @@ export const EnvSchema = z.object({
   /** User-Agent the crawler identifies itself with. */
   ALG_USER_AGENT: z.string().min(1).default("AlgBot/1.0 (+https://averio.agency/bot)"),
 
+  /**
+   * Shared secret for the trusted-service path.
+   *
+   * The Nexoro frontend (PHP, OMS cluster) authenticates its own users and calls
+   * ALG server-to-server. It presents this secret plus the acting tenant instead
+   * of a Supabase user token - which is only sound because the call comes from a
+   * server we operate, never from a browser. See createServiceAuthMiddleware.
+   *
+   * Optional: without it the service path is disabled entirely rather than
+   * falling back to something weaker.
+   */
+  ALG_SERVICE_TOKEN: optionalSecret,
+
+  /**
+   * Origins allowed to call this API from a browser, comma-separated.
+   *
+   * Empty means no browser may call it, which is the correct default: this API
+   * carries lead data under GDPR, and a permissive CORS rule on an authenticated
+   * origin is worth more to an attacker than to us. `*` is rejected outright -
+   * see parseAllowedOrigins.
+   */
+  ALG_CORS_ORIGINS: z.string().default(""),
+
+  /**
+   * Domain whose subdomains name a workspace, e.g. "nexoro.net" turns
+   * nexoro.nexoro.net into the workspace slug "nexoro".
+   *
+   * Empty disables subdomain resolution; the x-workspace-id header is then the
+   * only way to name a workspace.
+   */
+  ALG_TENANT_DOMAIN: z.string().default(""),
+
   SENTRY_DSN: optionalSecret,
   PUBLIC_BASE_URL: z.url().default("http://localhost:3000"),
 })
