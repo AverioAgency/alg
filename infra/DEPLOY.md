@@ -69,9 +69,43 @@ Notiere dir `entrypoints` und `certresolver` aus dieser Ausgabe.
 
 ## Schritt 2 — Repo klonen
 
+Das Repo ist privat, ein Passwort akzeptiert GitHub seit 2021 nicht mehr. Fuer
+einen Deploy-Server ist ein **Deploy Key** die bessere Wahl als ein Personal Access
+Token: er gilt nur fuer dieses eine Repo und kann read-only bleiben.
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/alg_deploy -N ""
+cat ~/.ssh/alg_deploy.pub
+```
+
+Den ausgegebenen Key auf GitHub eintragen: Repo `alg` → Settings → Deploy keys →
+Add deploy key. **"Allow write access" nicht anhaken** — der Server muss nur lesen.
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+Host github-alg
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/alg_deploy
+EOF
+
+git clone git@github-alg:AverioAgency/alg.git /opt/alg
+cd /opt/alg
+```
+
+Schneller, aber mit weiterem Zugriff: ein Fine-grained PAT mit `Contents: Read`,
+begrenzt auf `AverioAgency/alg`.
+
 ```bash
 mkdir -p /opt/alg && cd /opt/alg
-git clone <REPO-URL> .
+git clone https://<TOKEN>@github.com/AverioAgency/alg.git .
+```
+
+Der Punkt am Ende klont in das aktuelle Verzeichnis statt in einen Unterordner.
+Pruefen, dass es geklappt hat:
+
+```bash
+ls .env.example infra/docker-compose.yml
 ```
 
 ---
