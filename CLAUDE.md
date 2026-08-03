@@ -49,7 +49,7 @@ tools/
 ## Commands
 
 ```bash
-pnpm install            # requires Node >= 26 and pnpm 10 (corepack enable)
+pnpm install            # requires Node >= 26 and pnpm 10 (npm i -g pnpm@10.15.0)
 pnpm dev                # all services in watch mode
 pnpm build              # packages first, then apps (tsc project references)
 pnpm typecheck          # tsc -b across the whole monorepo
@@ -72,6 +72,13 @@ profile. Point `DATABASE_URL` at the self-hosted Supabase instead:
 ## Pitfalls
 
 Things that will bite, roughly in order of how expensive the mistake is:
+
+- **Node 26 has no Corepack.** It was removed from the distribution in Node 25, so
+  `corepack enable` fails with `command not found`. The Dockerfiles install pnpm
+  from npm instead — keep that version in sync with the `packageManager` field.
+- **Pin exact image tags and verify they exist.** `node:26.0.1` was never
+  published; the build failed with a 404 on the base image. Check first:
+  `curl -sI https://hub.docker.com/v2/repositories/library/node/tags/<tag>`
 
 - **Never create RLS policies.** Supabase is used as a plain Postgres. There is no
   anon key in circulation and the frontend never talks to the database. All

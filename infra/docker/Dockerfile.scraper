@@ -6,7 +6,8 @@
 FROM node:26.5.1-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+# Node 25 removed Corepack; keep this version in sync with packageManager.
+RUN npm install -g pnpm@10.15.0
 WORKDIR /app
 
 FROM base AS deps
