@@ -52,6 +52,19 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # The root build resolves every project, so it hides a missing tsconfig
+      # reference. The Dockerfiles build with --filter, which does not - and that
+      # difference has broken an image build before.
+      - name: Build the way the Dockerfiles do
+        run: |
+          rm -rf packages/*/dist packages/adapters/*/dist apps/*/dist
+          find . -name '*.tsbuildinfo' -not -path './node_modules/*' -delete
+          pnpm --filter @alg/shared --filter @alg/db --filter @alg/core \
+               --filter @alg/adapters-discovery --filter @alg/api build
+          pnpm --filter @alg/shared --filter @alg/db --filter @alg/core \
+               --filter @alg/adapters-discovery --filter @alg/worker build
+          pnpm --filter @alg/shared --filter @alg/scraper build
+
       - name: Test
         run: pnpm test
 

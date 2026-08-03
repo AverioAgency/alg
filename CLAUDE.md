@@ -76,6 +76,12 @@ profile. Point `DATABASE_URL` at the self-hosted Supabase instead:
 
 Things that will bite, roughly in order of how expensive the mistake is:
 
+- **A new package needs four edits, not one.** Adding a workspace package means:
+  the dependency in the consuming `package.json`, a `references` entry in its
+  `tsconfig.json`, a `--filter` in the Dockerfiles' build step, and the `dist` /
+  `package.json` / `node_modules` COPY lines in the runtime stage. `pnpm build`
+  at the root resolves everything and therefore hides a missing reference — the
+  Dockerfiles build with `--filter` and do not. CI now builds both ways.
 - **Node 26 has no Corepack.** It was removed from the distribution in Node 25, so
   `corepack enable` fails with `command not found`. The Dockerfiles install pnpm
   from npm instead — keep that version in sync with the `packageManager` field.

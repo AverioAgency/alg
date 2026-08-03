@@ -20,7 +20,8 @@ FROM deps AS build
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/ packages/
 COPY apps/worker/ apps/worker/
-RUN pnpm --filter @alg/shared --filter @alg/db --filter @alg/core --filter @alg/worker build
+RUN pnpm --filter @alg/shared --filter @alg/db --filter @alg/core \
+    --filter @alg/adapters-discovery --filter @alg/worker build
 
 FROM base AS runtime
 ENV NODE_ENV=production
@@ -38,6 +39,9 @@ COPY --from=build --chown=node:node /app/packages/db/node_modules /app/packages/
 COPY --from=build --chown=node:node /app/packages/core/dist /app/packages/core/dist
 COPY --from=build --chown=node:node /app/packages/core/package.json /app/packages/core/
 COPY --from=build --chown=node:node /app/packages/core/node_modules /app/packages/core/node_modules
+COPY --from=build --chown=node:node /app/packages/adapters/discovery/dist /app/packages/adapters/discovery/dist
+COPY --from=build --chown=node:node /app/packages/adapters/discovery/package.json /app/packages/adapters/discovery/
+COPY --from=build --chown=node:node /app/packages/adapters/discovery/node_modules /app/packages/adapters/discovery/node_modules
 COPY --from=build --chown=node:node /app/apps/worker/dist /app/apps/worker/dist
 COPY --from=build --chown=node:node /app/apps/worker/package.json /app/apps/worker/
 COPY --from=build --chown=node:node /app/apps/worker/node_modules /app/apps/worker/node_modules
