@@ -1,0 +1,25 @@
+{
+  "name": "@alg/scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal Playwright service. No public port - reachable only from api and worker. Playwright itself lands in M2.",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "node --env-file=../../.env --watch dist/index.js",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@alg/shared": "workspace:*",
+    "express": "^5.1.0",
+    "pino": "^9.9.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3"
+  }
+}

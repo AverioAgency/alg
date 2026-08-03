@@ -1,0 +1,36 @@
+{
+  "name": "@alg/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "node --env-file=../../.env --watch dist/server.js",
+    "start": "node dist/server.js",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@alg/core": "workspace:*",
+    "@alg/db": "workspace:*",
+    "@alg/shared": "workspace:*",
+    "drizzle-orm": "^0.44.5",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.7.0",
+    "jose": "^6.1.0",
+    "pino": "^9.9.0",
+    "pino-http": "^10.5.0",
+    "rate-limiter-flexible": "^7.4.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/express-serve-static-core": "^5.0.0",
+    "supertest": "^7.1.4",
+    "@types/supertest": "^6.0.3"
+  }
+}

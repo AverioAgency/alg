@@ -1,0 +1,25 @@
+{
+  "name": "@alg/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "node --env-file=../../.env --watch dist/index.js",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@alg/core": "workspace:*",
+    "@alg/db": "workspace:*",
+    "@alg/shared": "workspace:*",
+    "bullmq": "^5.58.0",
+    "drizzle-orm": "^0.44.5",
+    "ioredis": "^5.7.0",
+    "pino": "^9.9.0"
+  }
+}

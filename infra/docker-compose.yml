@@ -1,0 +1,165 @@
+# ALG local / single-host stack.
+#
+# Note on Supabase: this project uses a managed self-hosted Supabase at
+# db-alg-nexoro.averio.agency as its Postgres. The `postgres` service below is for
+# local development and CI only - set DATABASE_URL to the remote instance and it
+# goes unused. Supabase is treated as a plain Postgres: no RLS, no anon key in
+# circulation, the frontend never connects to it directly.
+
+name: alg
+
+services:
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # TLS stays off until the staging domain is pointed here. To enable:
+      # uncomment the resolver below plus the websecure labels on the api service.
+      # - --certificatesresolvers.le.acme.email=office@nexoro.net
+      # - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      # - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --accesslog=true
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Read-only: Traefik only needs to observe container labels.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_acme:/letsencrypt
+    networks:
+      - edge
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3000
+      ALG_STORAGE_PATH: /data/alg/storage
+      SCRAPER_URL: http://scraper:4000
+    volumes:
+      - alg_storage:/data/alg/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - edge
+      - internal
+      - scraping
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=alg_edge
+      - traefik.http.routers.alg-api.rule=Host(`alg-nexoro.averio.agency`)
+      - traefik.http.routers.alg-api.entrypoints=web
+      - traefik.http.services.alg-api.loadbalancer.server.port=3000
+      # Enable once ACME is configured:
+      # - traefik.http.routers.alg-api-secure.rule=Host(`alg-nexoro.averio.agency`)
+      # - traefik.http.routers.alg-api-secure.entrypoints=websecure
+      # - traefik.http.routers.alg-api-secure.tls.certresolver=le
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.worker
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      ALG_STORAGE_PATH: /data/alg/storage
+      SCRAPER_URL: http://scraper:4000
+    volumes:
+      - alg_storage:/data/alg/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+      - scraping
+
+  scraper:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.scraper
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      ALG_STORAGE_PATH: /data/alg/storage
+    volumes:
+      - alg_storage:/data/alg/storage
+    # No `ports:` and not on the edge network - the scraper is reachable from api
+    # and worker only. It fetches arbitrary third-party URLs, so it must never be
+    # able to reach Traefik, Postgres or Redis.
+    networks:
+      - scraping
+    labels:
+      - traefik.enable=false
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Local development only. Production points DATABASE_URL at the self-hosted
+  # Supabase instance instead.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_USER: alg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alg-local-dev}
+      POSTGRES_DB: alg
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alg -d alg"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # Named volume, not a bind mount into a home directory: it must survive a
+  # rebuild and be backed up by infra/scripts/backup.sh alongside pg_dump.
+  alg_storage:
+  redis_data:
+  postgres_data:
+  traefik_acme:
+
+networks:
+  edge:
+  internal:
+  # The scraper's own segment. api and worker join it explicitly when M2 wires up
+  # the internal HTTP call; nothing else is reachable from here.
+  scraping:

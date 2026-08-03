@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+#
+# M2 swaps this base for mcr.microsoft.com/playwright:v1.xx-noble once the browser
+# is actually needed. Until then the service stays slim and Playwright's Chromium
+# does not bloat every build.
+FROM node:26.0.1-bookworm-slim AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
+WORKDIR /app
+
+FROM base AS deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/scraper/package.json apps/scraper/
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile
+
+FROM deps AS build
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages/shared/ packages/shared/
+COPY apps/scraper/ apps/scraper/
+RUN pnpm --filter @alg/shared --filter @alg/scraper build
+
+FROM base AS runtime
+ENV NODE_ENV=production
+USER node
+
+COPY --from=build --chown=node:node /app/node_modules /app/node_modules
+COPY --from=build --chown=node:node /app/package.json /app/package.json
+COPY --from=build --chown=node:node /app/packages/shared/dist /app/packages/shared/dist
+COPY --from=build --chown=node:node /app/packages/shared/package.json /app/packages/shared/
+COPY --from=build --chown=node:node /app/packages/shared/node_modules /app/packages/shared/node_modules
+COPY --from=build --chown=node:node /app/apps/scraper/dist /app/apps/scraper/dist
+COPY --from=build --chown=node:node /app/apps/scraper/package.json /app/apps/scraper/
+COPY --from=build --chown=node:node /app/apps/scraper/node_modules /app/apps/scraper/node_modules
+
+WORKDIR /app/apps/scraper
+EXPOSE 4000
+CMD ["node", "dist/index.js"]
