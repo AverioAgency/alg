@@ -47,6 +47,11 @@ function makeAdapter(fetchImpl: ReturnType<typeof fakeFetch>) {
     endpoint: "https://overpass-api.de/api/interpreter",
     userAgent: "AlgBot/1.0 (+https://averio.agency/bot)",
     fetchImpl: fetchImpl as never,
+    // No mirrors and no waiting: the retry behaviour has its own tests below,
+    // and the rest of the suite should not sit through real backoff delays.
+    fallbackEndpoints: [],
+    maxAttempts: 1,
+    sleep: async () => undefined,
   })
 }
 
@@ -153,6 +158,116 @@ describe("OverpassAdapter", () => {
   it("rejects a body that is not JSON", async () => {
     const adapter = makeAdapter(fakeFetch("<html>rate limited</html>"))
     await expect(adapter.search(linzSpec)).rejects.toThrow(/not JSON/)
+  })
+})
+
+describe("OverpassAdapter resilience", () => {
+  /** Returns the given responses in order, so a retry sees a different one. */
+  function sequencedFetch(responses: { status: number; body: string }[]) {
+    let call = 0
+    const impl = vi.fn(async () => {
+      const response = responses[Math.min(call, responses.length - 1)]
+      call++
+      return {
+        status: response?.status ?? 500,
+        headers: new Headers(),
+        body: response?.body ?? "",
+        url: "https://overpass",
+      }
+    })
+    return impl
+  }
+
+  function resilientAdapter(fetchImpl: ReturnType<typeof sequencedFetch>) {
+    return new OverpassAdapter({
+      endpoint: "https://primary.test/api/interpreter",
+      userAgent: "AlgBot/1.0",
+      fetchImpl: fetchImpl as never,
+      fallbackEndpoints: ["https://mirror.test/api/interpreter"],
+      maxAttempts: 2,
+      sleep: async () => undefined,
+    })
+  }
+
+  it("retries a 504 rather than reporting an empty result", async () => {
+    // This is what actually happened in production: the public instance timed
+    // out, the run reported zero entities, and it looked like an empty area.
+    const fixture = await loadFixture("linz-restaurants.json")
+    const fetchImpl = sequencedFetch([
+      { status: 504, body: "<!DOCTYPE html><html>gateway timeout</html>" },
+      { status: 200, body: fixture },
+    ])
+
+    const { entities } = await resilientAdapter(fetchImpl).search(linzSpec)
+
+    expect(entities).toHaveLength(4)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries 429, which the public instance uses for rate limiting", async () => {
+    const fixture = await loadFixture("linz-restaurants.json")
+    const fetchImpl = sequencedFetch([
+      { status: 429, body: "too many requests" },
+      { status: 200, body: fixture },
+    ])
+
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).resolves.toBeDefined()
+  })
+
+  it("falls back to a mirror once the primary is exhausted", async () => {
+    const fixture = await loadFixture("linz-restaurants.json")
+    const fetchImpl = sequencedFetch([
+      { status: 504, body: "busy" },
+      { status: 504, body: "busy" },
+      { status: 200, body: fixture },
+    ])
+
+    const { entities } = await resilientAdapter(fetchImpl).search(linzSpec)
+
+    expect(entities).toHaveLength(4)
+    // Two attempts against the primary, then the mirror.
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe("https://mirror.test/api/interpreter")
+  })
+
+  it("does not retry a client error", async () => {
+    // A malformed query will not become valid by asking again.
+    const fetchImpl = sequencedFetch([{ status: 400, body: "bad request" }])
+
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).rejects.toThrow()
+    // One call per endpoint, no repeat against the same one.
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("names every endpoint it tried when all of them fail", async () => {
+    const fetchImpl = sequencedFetch([{ status: 504, body: "busy" }])
+
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).rejects.toThrow(
+      /primary\.test.*mirror\.test/s
+    )
+  })
+
+  it("moves to the next endpoint when the network itself fails", async () => {
+    const fixture = await loadFixture("linz-restaurants.json")
+    let call = 0
+    const fetchImpl = vi.fn(async () => {
+      call++
+      if (call === 1) throw new Error("ENOTFOUND")
+      return { status: 200, headers: new Headers(), body: fixture, url: "https://mirror" }
+    })
+
+    const adapter = new OverpassAdapter({
+      endpoint: "https://primary.test/api/interpreter",
+      userAgent: "AlgBot/1.0",
+      fetchImpl: fetchImpl as never,
+      fallbackEndpoints: ["https://mirror.test/api/interpreter"],
+      maxAttempts: 2,
+      sleep: async () => undefined,
+    })
+
+    const { entities } = await adapter.search(linzSpec)
+    expect(entities).toHaveLength(4)
+    // An unreachable host is not worth a second attempt; move on immediately.
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })
 

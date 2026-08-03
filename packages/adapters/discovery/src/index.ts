@@ -1,4 +1,9 @@
-export { OverpassAdapter, toRawEntity, type OverpassAdapterOptions } from "./overpass/adapter.js"
+export {
+  OverpassAdapter,
+  toRawEntity,
+  OVERPASS_FALLBACK_ENDPOINTS,
+  type OverpassAdapterOptions,
+} from "./overpass/adapter.js"
 export {
   PlacesAdapter,
   planPlacesQuery,
