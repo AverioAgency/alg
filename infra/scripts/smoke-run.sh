@@ -170,6 +170,40 @@ if [ "$FINAL_STATUS" = "failed" ]; then
   die "Lauf fehlgeschlagen"
 fi
 
+# Ein Lauf ohne Treffer sieht wie ein leeres Suchgebiet aus, ist aber meistens ein
+# Adapter-Fehler: der Orchestrator faengt ihn ab, damit eine ausgefallene Quelle
+# nicht die anderen mitreisst, und legt ihn im Plan ab.
+FOUND_TOTAL=$(echo "$FINAL" | jq -r '.entities_found // 0' 2>/dev/null)
+if [ "${FOUND_TOTAL}" = "0" ]; then
+  hr "4b. Warum 0 Treffer?"
+  echo "  Adapter-Ergebnisse dieses Laufs:"
+  echo "$FINAL" | jq -r '
+    (.plan // [])[]
+    | "    " + .adapterId + ": gefunden=" + (.found|tostring)
+      + (if .error then "  FEHLER: " + .error else "" end)
+  ' 2>/dev/null || echo "    (kein Plan gespeichert)"
+
+  ADAPTER_ERROR=$(echo "$FINAL" | jq -r '[(.plan // [])[] | select(.error)] | length' 2>/dev/null || echo 0)
+  if [ "${ADAPTER_ERROR}" != "0" ]; then
+    echo
+    echo "  Ein Adapter ist gescheitert. Erreicht der Worker die Quelle ueberhaupt?"
+    echo
+    docker compose exec -T worker node -e "
+      fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent('[out:json][timeout:25];node[\"amenity\"=\"restaurant\"](48.30,14.28,48.31,14.29);out 2;'),
+      })
+        .then((r) => r.text())
+        .then((t) => {
+          const n = (JSON.parse(t).elements || []).length
+          console.log('    Overpass direkt aus dem Worker: ' + n + ' Elemente - Netzwerk ist ok.')
+        })
+        .catch((e) => console.log('    Overpass NICHT erreichbar: ' + e.message))
+    " 2>/dev/null || echo "    (Worker-Container nicht erreichbar)"
+  fi
+fi
+
 hr "5. Was in der Datenbank gelandet ist"
 COMPANIES=$(call GET "/v1/companies?limit=5")
 echo "$COMPANIES" \
