@@ -97,50 +97,68 @@ export function createWebPresenceProvider(options: WebPresenceOptions): SignalPr
         }
       }
 
-      const url = `https://${domain}/`
+      // Normalization strips "www." because it is noise for deduplication, but
+      // plenty of domains only resolve with it - keintzel.at has no A record
+      // while www.keintzel.at does. Trying the bare host first and falling back
+      // finds the site either way.
+      const candidates = [`https://${domain}/`, `https://www.${domain}/`]
+      const url = candidates[0] ?? `https://${domain}/`
+      let lastError: unknown = null
 
-      try {
-        const response = await options.crawler.fetch(url, { signal: ctx.signal })
-        const finalUrl = response.url
+      for (const candidate of candidates) {
+        if (ctx.signal.aborted) break
 
-        return {
-          values: {
-            "web.presence.has_website": true,
-            "web.presence.reachable": response.status >= 200 && response.status < 400,
-            "web.presence.status_code": response.status,
-            "web.presence.https": finalUrl.startsWith("https://"),
-            "web.presence.final_url": finalUrl,
-            "web.presence.robots_blocked": false,
-          },
-          provenance: { ...provenance, sourceUrl: finalUrl },
-        }
-      } catch (error) {
-        if (error instanceof RobotsDisallowedError) {
-          // A domain exists and robots.txt answered - that is a website, we are
-          // just not allowed in. Reporting has_website: false here would be wrong.
+        try {
+          const response = await options.crawler.fetch(candidate, { signal: ctx.signal })
+          const finalUrl = response.url
+
           return {
             values: {
               "web.presence.has_website": true,
-              "web.presence.reachable": false,
-              "web.presence.robots_blocked": true,
+              "web.presence.reachable": response.status >= 200 && response.status < 400,
+              "web.presence.status_code": response.status,
+              "web.presence.https": finalUrl.startsWith("https://"),
+              "web.presence.final_url": finalUrl,
+              "web.presence.robots_blocked": false,
             },
-            provenance: { ...provenance, sourceUrl: url },
+            provenance: { ...provenance, sourceUrl: finalUrl },
           }
+        } catch (error) {
+          // robots.txt answering at all proves the site exists; trying the www
+          // variant would not change that verdict.
+          if (error instanceof RobotsDisallowedError) {
+            lastError = error
+            break
+          }
+          lastError = error
         }
+      }
 
-        const message = error instanceof Error ? error.message : String(error)
-        ctx.logger.debug({ domain, error: message }, "web.presence unreachable")
-
-        // A domain is recorded, it just does not answer - a parked domain or a
-        // dead site. Distinguishable from "no domain at all" by has_website.
+      if (lastError instanceof RobotsDisallowedError) {
+        // A domain exists and robots.txt answered - that is a website, we are
+        // just not allowed in. Reporting has_website: false here would be wrong.
         return {
           values: {
             "web.presence.has_website": true,
             "web.presence.reachable": false,
+            "web.presence.robots_blocked": true,
           },
           provenance: { ...provenance, sourceUrl: url },
-          error: message,
         }
+      }
+
+      const message = lastError instanceof Error ? lastError.message : String(lastError)
+      ctx.logger.debug({ domain, error: message }, "web.presence unreachable")
+
+      // A domain is recorded, it just does not answer - a parked domain or a
+      // dead site. Distinguishable from "no domain at all" by has_website.
+      return {
+        values: {
+          "web.presence.has_website": true,
+          "web.presence.reachable": false,
+        },
+        provenance: { ...provenance, sourceUrl: url },
+        error: message,
       }
     },
   }

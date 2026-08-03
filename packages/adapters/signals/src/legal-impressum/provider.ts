@@ -101,7 +101,14 @@ export function createLegalImpressumProvider(options: LegalImpressumOptions): Si
         return { values: { "legal.impressum.found": false }, provenance }
       }
 
-      const base = `https://${domain}`
+      // web.presence already resolved which host actually answers - it may be
+      // www.domain even though normalization stripped the prefix. Reusing that
+      // avoids re-discovering it and failing on domains that only serve on www.
+      const resolved =
+        typeof entity.signals?.["web.presence.final_url"] === "string"
+          ? String(entity.signals["web.presence.final_url"])
+          : null
+      const base = resolved ? new URL(resolved).origin : `https://${domain}`
       const candidates = IMPRESSUM_PATHS.map((path) => `${base}${path}`)
       let discoveredFromHomepage = false
 
