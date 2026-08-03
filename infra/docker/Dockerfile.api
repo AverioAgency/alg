@@ -1,9 +1,12 @@
 # syntax=docker/dockerfile:1.7
 #
-# Node 26 is pinned deliberately. It became Current on 2026-05-05 and is promoted
-# to Active LTS on 2026-10-28, which is before this project goes live - building on
-# it now avoids a runtime migration mid-operation. Never replace this with :latest.
-FROM node:26.0.1-bookworm-slim AS base
+# Node 26 is pinned to an exact patch release deliberately - never :latest, and
+# never a floating major. Bump this line consciously, together with the other two
+# Dockerfiles and the CI matrix, so all three services move at the same time.
+#
+# Verify a tag exists before pinning it:
+#   curl -sI https://hub.docker.com/v2/repositories/library/node/tags/<tag>
+FROM node:26.5.1-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable

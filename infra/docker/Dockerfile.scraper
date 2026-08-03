@@ -3,7 +3,7 @@
 # M2 swaps this base for mcr.microsoft.com/playwright:v1.xx-noble once the browser
 # is actually needed. Until then the service stays slim and Playwright's Chromium
 # does not bloat every build.
-FROM node:26.0.1-bookworm-slim AS base
+FROM node:26.5.1-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
