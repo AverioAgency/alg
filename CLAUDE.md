@@ -8,6 +8,10 @@ outreach from it.
 another repository. The interface to it is: the REST API, the OpenAPI 3.1 document
 at `GET /v1/openapi.json`, and the `@alg/shared` package.
 
+A human-readable reference of every endpoint is served at `GET /docs`
+(<https://alg-nexoro.averio.agency/docs>) — generated from the same OpenAPI
+document, so it cannot describe a route that does not exist.
+
 ## Core concepts
 
 - **Target type** (`local_business | company | person | list`) decides which
@@ -129,6 +133,19 @@ Things that will bite, roughly in order of how expensive the mistake is:
   the code that stops using it.
 - **User-visible strings are German, via i18n keys.** Code, identifiers and comments
   are English. Never hardcode German text in a handler.
+- **A new route is not finished until `openapi.ts` describes it.** Two things are
+  generated from that document and nothing else: the frontend's client, in the
+  other repository, and the reference page at `GET /docs`. A missing entry means
+  the endpoint is invisible to whoever builds the UI; a stale entry means a
+  generated client method that 404s at runtime. `openapi-coverage.test.ts` fails
+  the build in either direction, so this is enforced rather than remembered —
+  but write the entry in the same commit as the route, not afterwards.
+
+  The `/docs` page itself needs no maintenance: it renders whatever the document
+  says. What does need care is the **grouping** in `apps/api/src/docs.ts` — a
+  route matching no section lands in "Weitere", which is the page telling you it
+  does not know where the endpoint belongs. Give it a section rather than leaving
+  it there.
 
 ## Conventions
 

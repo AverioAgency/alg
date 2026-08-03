@@ -23,6 +23,7 @@ import { createClarifyRouter } from "./routes/clarify.js"
 import { createLlmClientFromEnv } from "@alg/core"
 import { buildSignalRegistry } from "@alg/adapters-signals"
 import { openApiDocument } from "./openapi.js"
+import { renderDocsPage } from "./docs.js"
 
 export interface AppOptions {
   env: Env
@@ -82,6 +83,33 @@ export function createApp(options: AppOptions): Express {
   app.get("/v1/openapi.json", (_req, res) => {
     res.json(openApiDocument(version))
   })
+
+  /**
+   * The human-readable API reference, generated from the same document.
+   *
+   * Public and mounted before the auth middleware: whoever is wiring up the
+   * frontend needs to read it before they have a token, and it exposes nothing a
+   * caller could not read from /v1/openapi.json anyway.
+   *
+   * Helmet's default CSP is disabled for JSON responses, so this route sets its
+   * own - the page is self-contained, and `default-src 'none'` plus inline
+   * styles is exactly what it needs.
+   */
+  app.get("/docs", (_req, res) => {
+    res
+      .type("html")
+      .setHeader(
+        "content-security-policy",
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+      )
+    // Not cached: a redeploy changes the routes, and a stale reference is worse
+    // than a slow one.
+    res.setHeader("cache-control", "no-cache")
+    res.send(renderDocsPage(openApiDocument(version), version))
+  })
+
+  // /docs without the /v1 prefix is the memorable form; both work.
+  app.get("/v1/docs", (_req, res) => res.redirect(302, "/docs"))
 
   // Signed report links are public by design and must not require a workspace header,
   // so this router is mounted before the auth middleware. Access is proven by the
