@@ -17,6 +17,7 @@
     "@alg/core": "workspace:*",
     "@alg/db": "workspace:*",
     "@alg/shared": "workspace:*",
+    "bullmq": "^5.58.0",
     "drizzle-orm": "^0.44.5",
     "express": "^5.1.0",
     "helmet": "^8.1.0",

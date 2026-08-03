@@ -61,3 +61,15 @@ export {
   type AdapterSelection,
 } from "./discovery/registry.js"
 export { evaluateFilter, haversineMetres, type EvalOptions } from "./discovery/filter-eval.js"
+export {
+  persistEntities,
+  normalizeEntity,
+  type PersistOptions,
+  type PersistResult,
+} from "./discovery/persist.js"
+export {
+  runDiscovery,
+  type RunDiscoveryOptions,
+  type RunDiscoveryResult,
+  type ProgressEvent,
+} from "./discovery/run.js"

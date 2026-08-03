@@ -1,0 +1,60 @@
+{
+  "places": [
+    {
+      "id": "ChIJVXealLU_xkcRja_At0z9AGY",
+      "displayName": { "text": "Gasthaus Zur Post", "languageCode": "de" },
+      "formattedAddress": "Hauptplatz 8, 4020 Linz, Österreich",
+      "addressComponents": [
+        { "longText": "8", "shortText": "8", "types": ["street_number"] },
+        { "longText": "Hauptplatz", "shortText": "Hauptplatz", "types": ["route"] },
+        { "longText": "Linz", "shortText": "Linz", "types": ["locality", "political"] },
+        {
+          "longText": "Oberösterreich",
+          "shortText": "OÖ",
+          "types": ["administrative_area_level_1", "political"]
+        },
+        { "longText": "Österreich", "shortText": "AT", "types": ["country", "political"] },
+        { "longText": "4020", "shortText": "4020", "types": ["postal_code"] }
+      ],
+      "location": { "latitude": 48.3060537, "longitude": 14.2865461 },
+      "nationalPhoneNumber": "0732 771234",
+      "internationalPhoneNumber": "+43 732 771234",
+      "websiteUri": "https://www.gasthaus-zur-post.at/",
+      "primaryType": "restaurant",
+      "types": ["restaurant", "food", "point_of_interest", "establishment"],
+      "businessStatus": "OPERATIONAL"
+    },
+    {
+      "id": "ChIJN1t_tDeuEmsRUsoyG83frY4",
+      "displayName": { "text": "Bistro Beispiel", "languageCode": "de" },
+      "formattedAddress": "Landstraße 12, 4020 Linz, Österreich",
+      "addressComponents": [
+        { "longText": "12", "shortText": "12", "types": ["street_number"] },
+        { "longText": "Landstraße", "shortText": "Landstraße", "types": ["route"] },
+        { "longText": "Linz", "shortText": "Linz", "types": ["locality", "political"] },
+        { "longText": "Österreich", "shortText": "AT", "types": ["country", "political"] },
+        { "longText": "4020", "shortText": "4020", "types": ["postal_code"] }
+      ],
+      "location": { "latitude": 48.3011234, "longitude": 14.2912345 },
+      "internationalPhoneNumber": "+43 732 998877",
+      "primaryType": "restaurant",
+      "types": ["restaurant", "establishment"],
+      "businessStatus": "OPERATIONAL"
+    },
+    {
+      "id": "ChIJgeschlossen00000000000000",
+      "displayName": { "text": "Ehemaliges Lokal", "languageCode": "de" },
+      "formattedAddress": "Irgendwo 1, 4020 Linz, Österreich",
+      "location": { "latitude": 48.3, "longitude": 14.29 },
+      "primaryType": "restaurant",
+      "businessStatus": "CLOSED_PERMANENTLY"
+    },
+    {
+      "id": "ChIJohnename0000000000000000",
+      "formattedAddress": "Ohne Name 1, 4020 Linz",
+      "location": { "latitude": 48.3, "longitude": 14.288 },
+      "businessStatus": "OPERATIONAL"
+    }
+  ],
+  "nextPageToken": "AeJbb3cBBBBBBBBBBBBBBBBBBBBBBBBB"
+}

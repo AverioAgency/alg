@@ -1,4 +1,5 @@
 export * from "./workspaces.js"
 export * from "./companies.js"
+export * from "./searches.js"
 export * from "./files.js"
 export * from "./audit.js"

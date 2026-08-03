@@ -14,6 +14,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@alg/adapters-discovery": "workspace:*",
     "@alg/core": "workspace:*",
     "@alg/db": "workspace:*",
     "@alg/shared": "workspace:*",

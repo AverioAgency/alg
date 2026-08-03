@@ -36,6 +36,16 @@ export const companies = pgTable(
     lon: doublePrecision("lon"),
     /** Normalized name used for trigram fuzzy dedupe (lowercased, legal forms stripped). */
     nameNormalized: text("name_normalized"),
+    /**
+     * Which dedupe stage created or merged this row, and how confident it was.
+     * Kept so a wrong merge can be found later - without it, a bad fuzzy match is
+     * indistinguishable from a legitimate one.
+     */
+    dedupeStage: varchar("dedupe_stage", { length: 16 }),
+    dedupeConfidence: doublePrecision("dedupe_confidence"),
+    /** Set when this row was first seen by a specific run. */
+    firstSeenRunId: uuid("first_seen_run_id"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     ...timestampColumns(),
   },
   (table) => [

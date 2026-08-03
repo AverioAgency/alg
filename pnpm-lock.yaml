@@ -44,6 +44,9 @@ importers:
       '@alg/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      bullmq:
+        specifier: ^5.58.0
+        version: 5.81.3
       drizzle-orm:
         specifier: ^0.44.5
         version: 0.44.7(@types/pg@8.20.3)(pg@8.22.0)
@@ -103,6 +106,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@alg/adapters-discovery':
+        specifier: workspace:*
+        version: link:../../packages/adapters/discovery
       '@alg/core':
         specifier: workspace:*
         version: link:../../packages/core

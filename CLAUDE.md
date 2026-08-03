@@ -37,8 +37,11 @@ apps/
 packages/
   shared/     Zod schemas + types. ALSO CONSUMED BY THE FRONTEND.
   db/         Drizzle schema, migrations, withWorkspace guard
-  core/       Domain logic: storage, kill switch; planner/scoring/sequences follow
-  adapters/   discovery/, signals/, channels/ (from M1 on)
+  core/       Domain logic: storage, kill switch, discovery (normalize, dedupe,
+              registry, orchestration); planner/scoring/sequences follow
+  adapters/
+    discovery/  Overpass, Google Places, CSV import
+                signals/ and channels/ arrive with M2 and M5
 infra/
   docker/     One Dockerfile per service
   scripts/    backup.sh, restore-test.sh, seed.ts
@@ -134,12 +137,28 @@ Running on averiodocker since 2026-08-03. Deployment notes in `infra/DEPLOY.md`;
 the stack joins the server's existing Traefik (`edge`) and the Supabase network
 rather than starting a proxy or a database of its own.
 
-**M1 in progress** — done so far: normalization (domain, E.164, company name),
-the dedupe cascade (source id → domain → E.164 → trigram on name+postcode at 0.85,
-matching pg_trgm exactly), SSRF-protected `safeFetch`, the discovery registry with
-push-down/post-filter split, and the Overpass adapter with fixture-backed contract
-tests.
+**M1 complete** — discovery end to end. `POST /v1/searches/:id/run` returns
+`202 { run_id }`, the worker consumes the `discovery` queue, and progress streams
+over SSE.
 
-Still open: Google Places and CSV adapters, migration 0001 (`searches`,
-`search_runs`), companies/contacts endpoints with cursor pagination, and the
-`discovery` BullMQ queue with SSE progress.
+- **Adapters**: Overpass (free, OSM), Google Places (priced, field-masked), CSV
+  import (any target type, reports skipped rows rather than dropping them).
+- **Normalization**: domain, E.164 phone, company name (umlauts transliterate
+  before accents fold, or "Müller" would collapse onto "Muller").
+- **Dedupe cascade**: source id → domain → E.164 → trigram on name+postcode at
+  0.85. The trigram implementation matches pg_trgm exactly, verified against the
+  documented `similarity('word','two words') = 0.363636`; in-memory dedupe and the
+  SQL index must not disagree on the same pair.
+- **Orchestration**: adapters run per plan, filters they cannot push down are
+  applied afterwards, a failing source does not lose the others' results, and a
+  paid adapter is skipped rather than started when it would breach the budget.
+- **Endpoints**: companies/contacts with keyset pagination, searches CRUD, runs,
+  and `GET /v1/streams/:runId` (SSE, resumable via `Last-Event-ID`).
+
+Migration 0001 adds `searches`, `search_runs`, `search_run_events` and the dedupe
+provenance columns on `companies`.
+
+**M2 next** — the signal layer: provider registry with DAG resolution, demand-driven
+execution, a crawler respecting robots.txt with per-host rate limiting, the
+`contact.basic` / `legal.impressum` / `web.*` / `gmb` / `hiring` providers, and the
+Playwright service for `web.quality`.

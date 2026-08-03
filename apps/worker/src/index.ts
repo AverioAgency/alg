@@ -6,6 +6,7 @@ import { closeDb, idempotencyKeys, initDb, withoutWorkspaceScope } from "@alg/db
 import { LocalFileStorage, runStorageCleanup } from "@alg/core"
 import { loadEnv } from "@alg/shared"
 import { DEFAULT_JOB_OPTIONS, JOB_NAMES, QUEUE_NAMES } from "./queues.js"
+import { createDiscoveryWorker } from "./discovery-worker.js"
 
 const GB = 1024 * 1024 * 1024
 
@@ -86,6 +87,8 @@ async function main(): Promise<void> {
     logger.error({ jobId: job?.id, jobName: job?.name, err: error }, "maintenance job failed")
   })
 
+  const discoveryWorker = createDiscoveryWorker({ connection, db, env, logger })
+
   logger.info(
     { queues: Object.values(QUEUE_NAMES), sendingEnabled: env.ALG_SENDING_ENABLED },
     "worker started"
@@ -93,6 +96,8 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, "shutting down worker")
+    // Close consumers before the queue so an in-flight discovery run finishes.
+    await discoveryWorker.close()
     await maintenanceWorker.close()
     await maintenance.close()
     await closeDb()

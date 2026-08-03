@@ -1,6 +1,7 @@
 import express, { type Express } from "express"
 import helmet from "helmet"
 import { pinoHttp } from "pino-http"
+import { Queue } from "bullmq"
 import { type Redis } from "ioredis"
 import { type Database } from "@alg/db"
 import { type FileStorage } from "@alg/core"
@@ -13,6 +14,9 @@ import { createRateLimiters, ipRateLimit, workspaceRateLimit } from "./middlewar
 import { requestId } from "./middleware/request-id.js"
 import { createFilesRouter } from "./routes/files.js"
 import { createHealthRouter } from "./routes/health.js"
+import { createCompaniesRouter } from "./routes/companies.js"
+import { createSearchesRouter } from "./routes/searches.js"
+import { createStreamsRouter } from "./routes/streams.js"
 import { openApiDocument } from "./openapi.js"
 
 export interface AppOptions {
@@ -100,6 +104,13 @@ export function createApp(options: AppOptions): Express {
   app.use("/v1", workspaceRateLimit(limiters))
   app.use("/v1", createIdempotencyMiddleware({ db }))
   app.use("/v1", filesRouter)
+
+  // The API only enqueues discovery work; the worker consumes it.
+  const discoveryQueue = new Queue("discovery", { connection: redis })
+
+  app.use("/v1", createCompaniesRouter({ db }))
+  app.use("/v1", createSearchesRouter({ db, discoveryQueue }))
+  app.use("/v1", createStreamsRouter({ db }))
 
   app.use(notFoundHandler)
   app.use(createErrorHandler(logger))
