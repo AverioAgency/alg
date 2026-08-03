@@ -25,6 +25,7 @@
   "dependencies": {
     "@alg/db": "workspace:*",
     "@alg/shared": "workspace:*",
+    "@anthropic-ai/sdk": "^0.69.0",
     "drizzle-orm": "^0.44.5",
     "zod": "^4.1.5"
   }

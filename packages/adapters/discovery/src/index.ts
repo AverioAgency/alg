@@ -28,6 +28,7 @@ export {
   planOverpassQuery,
   renderOverpassQl,
   knownCategories,
+  knownCompanyCategories,
   OVERPASS_SUPPORTED_KEYS,
   type OverpassQueryPlan,
 } from "./overpass/query.js"

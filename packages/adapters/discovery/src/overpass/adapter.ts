@@ -67,7 +67,17 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 
 export class OverpassAdapter implements DiscoveryAdapter {
   readonly id = "overpass"
-  readonly targetTypes: TargetType[] = ["local_business"]
+  /**
+   * Both, but not equally well.
+   *
+   * local_business is what OSM maps thoroughly - a restaurant without a map
+   * entry is rare. Companies are mapped unevenly: a joinery with a shopfront is
+   * usually there, the same joinery in an industrial park often is not. A
+   * company search over Overpass is therefore a seed list to enrich, not a
+   * register, and the orchestrator should pair it with a paid source when
+   * completeness matters.
+   */
+  readonly targetTypes: TargetType[] = ["local_business", "company"]
   readonly supports: string[] = [...OVERPASS_SUPPORTED_KEYS]
 
   private readonly options: {
@@ -146,7 +156,10 @@ export class OverpassAdapter implements DiscoveryAdapter {
     }
 
     const entities = result.data.elements
-      .map((element) => toRawEntity(element))
+      // The target type comes from the spec rather than being hardcoded: the
+      // same OSM object is a local_business in one search and a company in
+      // another, and dedupe keys on it.
+      .map((element) => toRawEntity(element, spec.targetType))
       .filter((entity): entity is RawEntity => entity !== null)
 
     // Overpass has no cursor. `out N` caps the result set, so a full page means
@@ -212,7 +225,10 @@ export class OverpassAdapter implements DiscoveryAdapter {
  * Maps an OSM element onto RawEntity. Returns null for elements without a name -
  * an unnamed shop is not a lead, and OSM has many of them.
  */
-export function toRawEntity(element: OverpassElement): RawEntity | null {
+export function toRawEntity(
+  element: OverpassElement,
+  targetType: TargetType = "local_business"
+): RawEntity | null {
   const tags = element.tags ?? {}
   const name = tags["name"] ?? tags["operator"] ?? tags["brand"]
   if (!name) return null
@@ -222,7 +238,21 @@ export function toRawEntity(element: OverpassElement): RawEntity | null {
   const street = tags["addr:street"]
   const houseNumber = tags["addr:housenumber"]
 
-  const categories = ["amenity", "shop", "tourism", "office", "leisure", "craft"]
+  // Includes the company-side keys, so a firm found via man_made=works or
+  // landuse=industrial carries its category into the record rather than
+  // arriving with an empty one.
+  const categories = [
+    "amenity",
+    "shop",
+    "tourism",
+    "office",
+    "leisure",
+    "craft",
+    "man_made",
+    "landuse",
+    "building",
+    "industrial",
+  ]
     .map((key) => (tags[key] ? `${key}=${tags[key]}` : null))
     .filter((value): value is string => value !== null)
 
@@ -230,7 +260,7 @@ export function toRawEntity(element: OverpassElement): RawEntity | null {
     source: "overpass",
     // Type prefix matters: node/1 and way/1 are different objects.
     sourceId: `${element.type}/${element.id}`,
-    targetType: "local_business",
+    targetType,
     name,
     raw: { ...tags, osm_type: element.type, osm_id: element.id },
   }

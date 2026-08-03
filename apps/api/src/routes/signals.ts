@@ -4,7 +4,16 @@ import { z } from "zod"
 import { type Queue } from "bullmq"
 import { companies, enrichmentRuns, withWorkspace, type Database } from "@alg/db"
 import { estimateSignalCost, loadCompanySignals, planSignals, type SignalRegistry } from "@alg/core"
-import { AppError, PROBLEM_TYPES, RubricSchema, SearchSpecSchema } from "@alg/shared"
+import {
+  AppError,
+  OPERATORS,
+  PROBLEM_TYPES,
+  RubricSchema,
+  SearchSpecSchema,
+  UNARY_OPERATORS,
+  categoriesFor,
+  coreFieldsFor,
+} from "@alg/shared"
 import { requireContext } from "../middleware/auth.js"
 
 /**
@@ -16,6 +25,8 @@ import { requireContext } from "../middleware/auth.js"
  */
 
 const IdParamSchema = z.object({ id: z.uuid() })
+
+const TargetTypeSchema = z.enum(["local_business", "company", "person", "list"])
 
 const EnrichRequestSchema = z.object({
   company_ids: z.array(z.uuid()).min(1).max(1000).optional(),
@@ -83,14 +94,68 @@ export function createSignalsRouter(options: SignalsRouterOptions): Router {
   router.get("/signals/schema", (req: Request, res: Response, next: NextFunction) => {
     try {
       requireContext(req)
-      const targetType = z
-        .enum(["local_business", "company", "person", "list"])
-        .optional()
-        .parse(req.query.target_type)
+      const targetType = TargetTypeSchema.optional().parse(req.query.target_type)
 
       res.json({
         providers: options.registry.describe(targetType),
         signals: options.registry.signalDefs(targetType),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  /**
+   * Everything the filter UI can offer, in one document.
+   *
+   * Three sources that the frontend would otherwise have to know about
+   * separately: the core.* fields discovery supplies, the signals providers
+   * produce, and the category vocabulary. Merged here because a filter row is
+   * built the same way whichever kind of field it targets.
+   */
+  router.get("/filters/schema", (req: Request, res: Response, next: NextFunction) => {
+    try {
+      requireContext(req)
+      const targetType = TargetTypeSchema.optional().parse(req.query.target_type)
+
+      const signals = options.registry.signalDefs(targetType)
+
+      res.json({
+        target_type: targetType ?? null,
+        fields: [
+          ...coreFieldsFor(targetType).map((field) => ({
+            key: field.key,
+            kind: "core" as const,
+            type: field.type,
+            operators: field.operators,
+            label_key: field.labelKey,
+            ...(field.unit ? { unit: field.unit } : {}),
+            // Empty means every adapter fetches first and filters afterwards -
+            // slower, and on a paid source more expensive. The UI can warn.
+            pushed_down_by: field.pushedDownBy,
+            /** Never costs anything: discovery supplies it. */
+            cost_per_entity_eur: 0,
+          })),
+          ...signals.map((signal) => ({
+            key: signal.key,
+            kind: "signal" as const,
+            type: signal.type,
+            operators: signal.operators,
+            label_key: signal.labelKey,
+            ...(signal.enumValues ? { enum_values: signal.enumValues } : {}),
+            ...(signal.unit ? { unit: signal.unit } : {}),
+            pushed_down_by: [],
+            // Referencing this field in a filter is what makes its provider run.
+            cost_per_entity_eur: providerCostFor(signal.key, options.registry),
+          })),
+        ],
+        categories: categoriesFor(targetType).map((category) => ({
+          slug: category.slug,
+          label_key: category.labelKey,
+          target_type: category.targetType,
+        })),
+        operators: OPERATORS,
+        unary_operators: UNARY_OPERATORS,
       })
     } catch (error) {
       next(error)
@@ -267,6 +332,17 @@ export function createSignalsRouter(options: SignalsRouterOptions): Router {
   })
 
   return router
+}
+
+/**
+ * What referencing this signal in a filter costs per entity.
+ *
+ * Shown next to the field so the user sees the price before building the filter
+ * rather than after the run. Zero for a free provider; a signal with no provider
+ * cannot be filtered on at all and costs nothing because nothing runs.
+ */
+function providerCostFor(signalKey: string, registry: SignalRegistry): number {
+  return registry.providerFor(signalKey)?.cost.amount ?? 0
 }
 
 async function allCompanyIds(ctx: { workspaceId: string }, db: Database): Promise<string[]> {

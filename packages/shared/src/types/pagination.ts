@@ -28,13 +28,14 @@ export interface Paginated<T> {
  * Uses TextEncoder/atob/btoa rather than Buffer: this module is bundled into the
  * frontend, where Buffer does not exist.
  */
-function toBase64Url(bytes: Uint8Array): string {
+/** Exported for the SearchSpec encoder, which needs the same URL-safe alphabet. */
+export function toBase64Url(bytes: Uint8Array): string {
   let binary = ""
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
 }
 
-function fromBase64Url(value: string): Uint8Array {
+export function fromBase64Url(value: string): Uint8Array {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/")
   const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="))
   const bytes = new Uint8Array(binary.length)
