@@ -123,15 +123,23 @@ Things that will bite, roughly in order of how expensive the mistake is:
 
 ## Status
 
-**M0 complete** — monorepo, `@alg/shared` contracts, Drizzle schema and first
-migration, `withWorkspace` guard plus its ESLint rule, `LocalFileStorage` with
-atomic writes and traversal defence, Express skeleton with auth/rate
+**M0 complete and deployed** — monorepo, `@alg/shared` contracts, Drizzle schema
+and first migration, `withWorkspace` guard plus its ESLint rule, `LocalFileStorage`
+with atomic writes and traversal defence, Express skeleton with auth/rate
 limiting/idempotency/problem+json, `/v1/health` including storage fill level,
 `/v1/files/:id` and `/v1/r/:token`, worker with the retention cron, scraper stub,
-Docker Compose with Traefik, backup and restore-test scripts, CI on Node 26 with a
-24 LTS fallback job.
+backup and restore-test scripts, CI on Node 26 with a 24 LTS fallback job.
 
-**M1 next** — discovery: adapter interface, Overpass / Google Places / CSV import,
-normalization to `RawEntity`, the dedupe cascade (place_id → domain → E.164 phone →
-trigram fuzzy on name+postcode at 0.85), companies/contacts endpoints with cursor
-pagination, and the `discovery` BullMQ queue with SSE progress.
+Running on averiodocker since 2026-08-03. Deployment notes in `infra/DEPLOY.md`;
+the stack joins the server's existing Traefik (`edge`) and the Supabase network
+rather than starting a proxy or a database of its own.
+
+**M1 in progress** — done so far: normalization (domain, E.164, company name),
+the dedupe cascade (source id → domain → E.164 → trigram on name+postcode at 0.85,
+matching pg_trgm exactly), SSRF-protected `safeFetch`, the discovery registry with
+push-down/post-filter split, and the Overpass adapter with fixture-backed contract
+tests.
+
+Still open: Google Places and CSV adapters, migration 0001 (`searches`,
+`search_runs`), companies/contacts endpoints with cursor pagination, and the
+`discovery` BullMQ queue with SSE progress.
