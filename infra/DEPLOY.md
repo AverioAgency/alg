@@ -329,13 +329,51 @@ Deploy prueft die Infrastruktur, nicht die Fachlichkeit.
 `TRAEFIK_NETWORK` stimmt nicht. `docker network ls` zeigt den echten Namen.
 
 **Container laeuft, aber die Domain antwortet nicht**
-Fast immer ein falscher `TRAEFIK_ENTRYPOINT`. Pruefen:
+
+Zuerst den HTTP-Code unterscheiden - er sagt, wo es klemmt:
+
+| Code  | Bedeutung                                                     |
+| ----- | ------------------------------------------------------------- |
+| `404` | Traefik erreichbar, Route unbekannt → Label- oder Netzproblem |
+| `502` | Route da, Backend antwortet nicht → Container oder Port       |
+| `000` | Gar keine Antwort → DNS, TLS oder Firewall, **nicht** Labels  |
+
+Statt zu raten, die Diagnose laufen lassen:
 
 ```bash
-docker logs traefik 2>&1 | grep -i alg | tail -20
+bash infra/scripts/traefik-diagnose.sh
 ```
 
-Sieht man dort keinen `alg-api`-Router, kennt Traefik die Labels nicht.
+**`HTTP 000` und im Traefik-Log steht `NXDOMAIN`**
+
+Der haeufigste Fall bei einer neuen Subdomain: Es gibt keinen A-Record, also
+scheitert die ACME-HTTP-01-Challenge, es gibt kein Zertifikat, und der
+TLS-Handshake bricht ab.
+
+```
+ERR Unable to obtain ACME certificate ... DNS problem: NXDOMAIN looking up A
+```
+
+Loesung: A-Record auf die Server-IP anlegen (`curl -s https://ifconfig.me`),
+TTL 300, bei Cloudflare **ohne Proxy** (graue Wolke) - sonst terminiert
+Cloudflare TLS und die Challenge erreicht Traefik nie. Danach:
+
+```bash
+getent hosts alg-nexoro.averio.agency   # muss die Server-IP liefern
+docker restart traefik                  # neuer ACME-Versuch
+curl -s https://alg-nexoro.averio.agency/v1/health | jq
+```
+
+Ob es wirklich am DNS liegt, zeigt der lokale Test - er umgeht DNS und Firewall:
+
+```bash
+curl -sk -o /dev/null -w "%{http_code}\n" \
+  --resolve alg-nexoro.averio.agency:443:127.0.0.1 \
+  https://alg-nexoro.averio.agency/v1/health
+```
+
+Kommt hier `200`, ist die gesamte Traefik-Konfiguration korrekt und das Problem
+liegt ausserhalb des Servers.
 
 **`EnvValidationError` beim Start**
 Gewollt: eine unvollstaendige Konfiguration faellt sofort auf, statt halb zu
