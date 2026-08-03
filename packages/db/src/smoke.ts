@@ -109,45 +109,30 @@ async function main(): Promise<void> {
       jwtSecret
     )
 
+    // Printed as three exports plus one command on purpose: the earlier version
+    // listed the curl steps with <id from step 1> placeholders, which invites
+    // pasting the whole block at once and produces a malformed URL.
     console.log(`
 Workspace and token ready. Valid for 24 hours.
 
   WORKSPACE_ID  ${workspaceId}
   USER_ID       ${userId}
 
-Export these, then run the commands below:
+Copy these three lines, then start the run:
 
 export ALG_URL="${baseUrl}"
 export WS="${workspaceId}"
 export TOKEN="${token}"
 
-# 1. Create a search (restaurants in Linz, via Overpass - free, no API key)
-curl -sX POST "$ALG_URL/v1/searches" \\
-  -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS" \\
-  -H "content-type: application/json" \\
-  -d '{"name":"Restaurants Linz","spec":{"targetType":"local_business","limit":25,
-       "filters":{"op":"and","children":[
-         {"op":"eq","key":"core.category","value":"restaurant"},
-         {"op":"within","key":"core.geo","value":{"bbox":[48.28,14.25,48.33,14.33]}}]}}}' | jq
+bash infra/scripts/smoke-run.sh
 
-# 2. Start it - returns 202 with a run_id
-export SEARCH_ID="<id from step 1>"
-curl -sX POST "$ALG_URL/v1/searches/$SEARCH_ID/run" \\
-  -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS" \\
-  -H "content-type: application/json" -d '{}' | jq
+The script creates a search, starts it, waits for completion and prints what
+landed in the database - carrying the ids between steps itself.
 
-# 3. Watch progress (Ctrl-C to stop)
-export RUN_ID="<run_id from step 2>"
-curl -N "$ALG_URL/v1/streams/$RUN_ID" \\
-  -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS"
+To watch progress live in a second shell:
 
-# 4. The run's final counters
-curl -s "$ALG_URL/v1/runs/$RUN_ID" \\
-  -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS" | jq
-
-# 5. What landed in the database
-curl -s "$ALG_URL/v1/companies?limit=5" \\
-  -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS" | jq
+  curl -N "$ALG_URL/v1/streams/<run_id>" \\
+    -H "authorization: Bearer $TOKEN" -H "x-workspace-id: $WS"
 `)
   } catch (error) {
     console.error("Bootstrap failed:", error instanceof Error ? error.message : error)
