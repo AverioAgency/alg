@@ -4,6 +4,36 @@ Abfragen zum Ausprobieren von Hand, nach Milestone geordnet. Der vollständige
 Durchlauf steckt in `e2e-run.sh` — hier stehen die einzelnen Teile, damit man
 gezielt eine Sache prüfen kann.
 
+## Deployment
+
+Vor dem ersten Lauf von M3/M4 auf dem Server:
+
+```bash
+# 1. pnpm, falls es fehlt. Node 26 hat kein Corepack mehr, also aus npm:
+npm i -g pnpm@10.15.0
+
+# 2. Den richtigen Stand holen. Solange der PR nicht gemergt ist, liegt M3/M4
+#    auf einem Branch - ein `git pull` auf main holt ihn NICHT.
+git fetch origin
+git checkout feat/m3-m4-scoring-onboarding
+git pull
+
+# 3. Neue Dependency (@anthropic-ai/sdk) und Migration 0003
+pnpm install
+pnpm migrate
+
+# 4. Images neu bauen - der laufende Container hat die neuen Endpunkte nicht
+docker compose build api worker
+docker compose up -d api worker
+
+# 5. Prüfen, dass der neue Stand läuft
+docker compose exec api node -e "
+  fetch('http://localhost:3000/v1/health').then(r=>r.json()).then(d=>console.log(d.status))
+"
+```
+
+Ein `404` auf `/v1/filters/schema` heißt fast immer: Schritt 4 fehlt.
+
 ## Vorbereitung
 
 ```bash
