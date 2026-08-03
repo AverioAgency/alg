@@ -29,6 +29,17 @@ if [ "${TOKEN}" = "eyJhbGci..." ] || [ ${#TOKEN} -lt 100 ]; then
   exit 1
 fi
 
+# Auf dem Server ist die eigene oeffentliche Domain wegen NAT nicht erreichbar.
+# Ein aus einer frueheren Sitzung uebrig gebliebenes ALG_URL wuerde den Lauf
+# deshalb an einem Problem scheitern lassen, das es gar nicht gibt - also wird es
+# hier ignoriert, sobald ein laufender api-Container gefunden wird.
+if [ -n "${ALG_URL:-}" ] && docker compose ps --status running api 2>/dev/null | grep -q api; then
+  printf '\033[33mALG_URL ist gesetzt (%s), aber der api-Container laeuft hier.\033[0m\n' "${ALG_URL}"
+  printf 'Der Server erreicht seine eigene Domain wegen NAT nicht - nutze den Container.\n'
+  printf '(Fuer den Weg ueber die Domain: von einem anderen Rechner ausfuehren.)\n\n'
+  unset ALG_URL
+fi
+
 # Ohne ALG_URL: durch den Container, damit NAT keine Rolle spielt.
 if [ -n "${ALG_URL:-}" ]; then
   MODE="direkt gegen ${ALG_URL}"
@@ -78,9 +89,24 @@ command -v jq >/dev/null || die "jq fehlt (apt install jq)"
 printf '\033[1mModus:\033[0m %s\n' "$MODE"
 
 hr "0. Erreichbarkeit"
-HEALTH=$(call GET /v1/health) || die "API antwortet nicht"
-echo "$HEALTH" | jq -c '{status, version, sendingEnabled}' 2>/dev/null \
-  || die "Antwort ist kein JSON: ${HEALTH}"
+HEALTH=$(call GET /v1/health)
+if [ -z "$HEALTH" ] || ! echo "$HEALTH" | jq -e . >/dev/null 2>&1; then
+  printf '\033[31mAPI antwortet nicht (%s).\033[0m\n' "$MODE" >&2
+  if [ -n "${ALG_URL:-}" ]; then
+    echo >&2
+    echo "Laeuft das hier auf dem Server? Dann ALG_URL entfernen:" >&2
+    echo "  unset ALG_URL && bash infra/scripts/smoke-run.sh" >&2
+    echo >&2
+    echo "Der Server erreicht seine eigene Domain wegen NAT nicht, von aussen geht sie." >&2
+  else
+    echo >&2
+    echo "Container-Status:  docker compose ps api" >&2
+    echo "API-Log:           docker compose logs api --tail 30" >&2
+  fi
+  [ -n "$HEALTH" ] && { echo >&2; echo "Antwort war: ${HEALTH}" >&2; }
+  exit 1
+fi
+echo "$HEALTH" | jq -c '{status, version, sendingEnabled}'
 
 hr "1. Suche anlegen"
 SEARCH=$(call POST /v1/searches -d '{
