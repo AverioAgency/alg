@@ -9,6 +9,8 @@ gezielt eine Sache prüfen kann.
 Vor dem ersten Lauf von M3/M4 auf dem Server:
 
 ```bash
+cd /opt/alg
+
 # 1. pnpm, falls es fehlt. Node 26 hat kein Corepack mehr, also aus npm:
 npm i -g pnpm@10.15.0
 
@@ -21,18 +23,71 @@ git pull
 # 3. Neue Dependency (@anthropic-ai/sdk) und Migration 0003
 pnpm install
 pnpm migrate
+```
 
-# 4. Images neu bauen - der laufende Container hat die neuen Endpunkte nicht
+### 4. Neue ENV-Variablen
+
+**Vor** dem Neubauen in die `.env` — der Container liest sie beim Start, ein
+Nachtragen danach erfordert einen weiteren Neustart.
+
+```bash
+# Geheimnis für die Anbindung des Nexoro-PHP-Backends erzeugen:
+openssl rand -hex 32
+```
+
+```ini
+# Dieses Geheimnis bekommt auch der PHP-Server. Leer = Service-Pfad aus.
+ALG_SERVICE_TOKEN=<das erzeugte Geheimnis>
+
+# Subdomain bestimmt den Mandanten: nexoro.nexoro.net -> Workspace "nexoro"
+ALG_TENANT_DOMAIN=nexoro.net
+
+# Nur nötig, wenn ein Browser die API direkt aufruft. Leer = kein Browser darf.
+ALG_CORS_ORIGINS=
+
+# Erst wenn die Keys da sind - ohne sie läuft alles, nur eingeschränkt:
+# ohne Anthropic rein regelbasiert, ohne Google nur über Overpass.
+ANTHROPIC_API_KEY=
+GOOGLE_PLACES_API_KEY=
+```
+
+```bash
+# 5. Images neu bauen - der laufende Container hat die neuen Endpunkte nicht
 docker compose build api worker
 docker compose up -d api worker
 
-# 5. Prüfen, dass der neue Stand läuft
-docker compose exec api node -e "
-  fetch('http://localhost:3000/v1/health').then(r=>r.json()).then(d=>console.log(d.status))
-"
+# 6. Prüfen, dass der neue Stand läuft
+curl -s https://alg-nexoro.averio.agency/v1/health | jq -c '{status, version}'
 ```
 
-Ein `404` auf `/v1/filters/schema` heißt fast immer: Schritt 4 fehlt.
+Ein `404` auf `/v1/filters/schema` heißt fast immer: Schritt 5 fehlt.
+
+Danach steht die Referenz aller Endpunkte unter
+<https://alg-nexoro.averio.agency/docs>.
+
+### 7. Anbindung prüfen
+
+Ohne echtes Token muss ein `401` kommen — kommt stattdessen ein `200`, ist
+etwas grundlegend falsch:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'x-alg-service-token: falsch' \
+  -H 'x-workspace-slug: nexoro' \
+  https://alg-nexoro.averio.agency/v1/playbooks
+```
+
+Mit dem echten Token:
+
+```bash
+curl -s -H "x-alg-service-token: $ALG_SERVICE_TOKEN" \
+     -H 'x-workspace-slug: nexoro' \
+     -H 'x-alg-user: test' \
+     https://alg-nexoro.averio.agency/v1/playbooks | jq '.data[].slug'
+```
+
+Der erste Aufruf legt den Workspace `nexoro` an. Details zur PHP-Seite:
+[FRONTEND.md](../FRONTEND.md).
 
 ## Vorbereitung
 

@@ -320,8 +320,15 @@ export function renderDocsPage(doc: DocsSource, version: string): string {
     border-radius: 6px; padding: 14px 18px; margin: 0 0 32px; font-size: 14.5px;
   }
   .note h4 { margin: 0 0 6px; font-size: 14px; }
+  .note h4 + h5 { margin-top: 4px; }
+  .note h5 {
+    margin: 18px 0 6px; font-size: 13px; color: var(--fg);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
   .note p { margin: 0 0 8px; color: var(--muted); }
   .note p:last-child { margin-bottom: 0; }
+  .note table.params { margin: 8px 0 12px; }
+  .note table.params td { color: var(--muted); }
   footer { border-top: 1px solid var(--line); margin-top: 40px; padding-top: 20px; color: var(--muted); font-size: 13px; }
   a { color: var(--accent); }
 </style>
@@ -345,13 +352,57 @@ export function renderDocsPage(doc: DocsSource, version: string): string {
 </header>
 
 <div class="note">
-  <h4>Authentifizierung</h4>
+  <h4>Zwei Wege hinein</h4>
   <p>
-    Jede Anfrage außer <code>/health</code>, <code>/ready</code> und <code>/r/:token</code>
-    braucht zwei Header: <code>Authorization: Bearer &lt;Supabase-Token&gt;</code> und
-    <code>x-workspace-id: &lt;uuid&gt;</code>. Die Mitgliedschaft im Workspace wird bei
-    jeder Anfrage geprüft.
+    Beide enden bei derselben Prüfung — die Mitgliedschaft im Workspace wird bei
+    jeder Anfrage kontrolliert. Ohne Authentifizierung erreichbar sind nur
+    <code>/health</code>, <code>/ready</code>, <code>/docs</code> und
+    <code>/r/:token</code>.
   </p>
+
+  <h5>1. Server zu Server — für das Nexoro-Backend (PHP)</h5>
+  <p>
+    Nexoro authentifiziert seine Nutzer selbst. Statt für jeden einen
+    Supabase-Login anzulegen, weist sich der Server mit einem gemeinsamen
+    Geheimnis aus und nennt dazu, wer gerade handelt. Der Endnutzer richtet
+    nichts ein.
+  </p>
+  <table class="params">
+    <thead><tr><th>Header</th><th>Pflicht</th><th></th></tr></thead>
+    <tbody>
+      <tr><td><code>x-alg-service-token</code><span class="req">*</span></td><td>ja</td>
+          <td>Das gemeinsame Geheimnis (<code>ALG_SERVICE_TOKEN</code>)</td></tr>
+      <tr><td><code>x-workspace-slug</code></td><td>nein</td>
+          <td>Mandant, falls er nicht aus der Subdomain hervorgeht</td></tr>
+      <tr><td><code>x-alg-user</code></td><td>nein</td>
+          <td>ID des handelnden Nutzers, damit der Audit-Log eine Person nennt</td></tr>
+      <tr><td><code>x-alg-user-email</code></td><td>nein</td>
+          <td>Dessen E-Mail</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Der Workspace ergibt sich aus der Subdomain:
+    <code>nexoro.nexoro.net</code> → <code>nexoro</code>, beim ersten Aufruf
+    automatisch angelegt. Der Hostname <em>benennt</em> den Mandanten nur — das
+    Geheimnis autorisiert ihn. Ohne das Token wird der Host-Header vollständig
+    ignoriert, denn setzen kann ihn jeder. Reservierte Namen
+    (<code>www</code>, <code>api</code>, <code>admin</code> …) und verschachtelte
+    Subdomains werden abgelehnt statt zu Mandanten gemacht.
+  </p>
+  <p>
+    <strong>Das Token gehört auf einen Server, nie in einen Browser</strong> — wer
+    es hat, kann für jeden Workspace handeln.
+  </p>
+
+  <h5>2. Supabase-Token — für Aufrufe aus dem Browser</h5>
+  <p>
+    <code>Authorization: Bearer &lt;Supabase-Token&gt;</code> plus
+    <code>x-workspace-id: &lt;uuid&gt;</code>. Dieser Weg braucht zusätzlich eine
+    CORS-Freigabe (<code>ALG_CORS_ORIGINS</code>); ohne sie darf kein Browser die
+    API aufrufen.
+  </p>
+
+  <h4>Konventionen</h4>
   <p>
     Fehler folgen RFC 9457 (<code>application/problem+json</code>). Der <code>type</code>-Slug
     ist stabil und Teil des öffentlichen Vertrags — darauf darf das Frontend verzweigen.

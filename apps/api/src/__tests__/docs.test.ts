@@ -30,10 +30,21 @@ describe("renderDocsPage", () => {
     expect(onboarding).toBeLessThan(operations)
   })
 
-  it("explains the two required headers", () => {
-    // The single most common reason a first request fails.
+  it("explains both ways in", () => {
+    // The single most common reason a first request fails. Since the Nexoro
+    // backend uses the service path and never sees a Supabase token, a page
+    // documenting only the JWT would send whoever wires it up down the wrong
+    // road entirely.
+    expect(html).toContain("x-alg-service-token")
+    expect(html).toContain("x-workspace-slug")
     expect(html).toContain("x-workspace-id")
     expect(html).toContain("Authorization: Bearer")
+  })
+
+  it("says plainly that the service token must not reach a browser", () => {
+    // It is the whole tenant boundary on that path; someone copying it into
+    // frontend code would hand every visitor access to every workspace.
+    expect(html).toContain("nie in einen Browser")
   })
 
   it("links to the machine-readable document", () => {
