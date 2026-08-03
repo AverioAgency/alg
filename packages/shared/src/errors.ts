@@ -22,6 +22,15 @@ export const PROBLEM_TYPES = {
   INVALID_SIGNED_TOKEN: "invalid-signed-token",
   UPSTREAM_UNAVAILABLE: "upstream-unavailable",
   BUDGET_EXCEEDED: "budget-exceeded",
+  /**
+   * An optional LLM stage was requested but no API key is configured. The
+   * deployment is incomplete, not broken - which is why this is a 503 and its
+   * own slug: the frontend should offer the rule-only path rather than show a
+   * generic failure.
+   */
+  LLM_NOT_CONFIGURED: "llm-not-configured",
+  /** The model answered, but the answer was unusable. */
+  LLM_UNAVAILABLE: "llm-unavailable",
   INTERNAL: "internal-error",
 } as const
 
@@ -69,6 +78,8 @@ const DEFAULT_STATUS: Record<ProblemTypeSlug, number> = {
   [PROBLEM_TYPES.INVALID_SIGNED_TOKEN]: 403,
   [PROBLEM_TYPES.UPSTREAM_UNAVAILABLE]: 502,
   [PROBLEM_TYPES.BUDGET_EXCEEDED]: 402,
+  [PROBLEM_TYPES.LLM_NOT_CONFIGURED]: 503,
+  [PROBLEM_TYPES.LLM_UNAVAILABLE]: 502,
   [PROBLEM_TYPES.INTERNAL]: 500,
 }
 

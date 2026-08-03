@@ -75,6 +75,25 @@ export function openApiDocument(version: string): Record<string, unknown> {
           },
           required: ["status", "version", "uptimeSeconds", "sendingEnabled", "storage"],
         },
+        Operator: {
+          type: "string",
+          description:
+            "Leaf comparison operators. Shared by search filters and rubric criteria, so a condition means the same thing in both. `exists` is unary and ignores value.",
+          enum: [
+            "eq",
+            "neq",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "in",
+            "nin",
+            "contains",
+            "intersects",
+            "exists",
+            "within",
+          ],
+        },
         FilterNode: {
           type: "object",
           description:
@@ -183,6 +202,107 @@ export function openApiDocument(version: string): Record<string, unknown> {
             updated_at: { type: "string", format: "date-time" },
           },
           required: ["id", "name", "target_type", "created_at"],
+        },
+        Rubric: {
+          type: "object",
+          description:
+            "A rubric is data, not code. The engine has no built-in notion of a good lead - what makes one is entirely what this document says.",
+          properties: {
+            criteria: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "Shown to the user, in German." },
+                  signal: {
+                    type: "string",
+                    description: "A key from GET /v1/signals/schema.",
+                  },
+                  condition: {
+                    type: "object",
+                    properties: {
+                      op: { $ref: "#/components/schemas/Operator" },
+                      value: {},
+                    },
+                    required: ["op", "value"],
+                  },
+                  weight: {
+                    type: "integer",
+                    minimum: -100,
+                    maximum: 100,
+                    description:
+                      "Negative penalizes. Zero means compute the signal but do not rank on it - which is how a market-research rubric collects data without producing a ranking.",
+                  },
+                  hard: {
+                    type: "boolean",
+                    description:
+                      "Failing a hard criterion excludes the lead outright, whatever else it scores.",
+                  },
+                },
+                required: ["label", "signal", "condition", "weight"],
+              },
+            },
+            llmCriteria: {
+              type: "array",
+              description:
+                "Optional LLM stage. Without ANTHROPIC_API_KEY it is skipped and llm stays null on the score.",
+              items: {
+                type: "object",
+                properties: {
+                  prompt: { type: "string" },
+                  weight: { type: "integer", minimum: -100, maximum: 100 },
+                },
+                required: ["prompt", "weight"],
+              },
+            },
+            threshold: {
+              type: "number",
+              description: "Minimum total for a lead to qualify.",
+            },
+          },
+          required: ["criteria", "threshold"],
+        },
+        LeadScore: {
+          type: "object",
+          properties: {
+            total: { type: "integer", minimum: 0, maximum: 100 },
+            qualified: { type: "boolean" },
+            threshold: { type: "number" },
+            breakdown: {
+              type: "array",
+              description:
+                "One entry per criterion, matched or not. A score without this cannot be explained to the user.",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  signal: { type: "string" },
+                  actualValue: {
+                    nullable: true,
+                    description:
+                      "null means the signal was never computed. Distinct from a signal measured as false: a failed crawl must not look like a disqualifying answer.",
+                  },
+                  matched: { type: "boolean" },
+                  weight: { type: "number" },
+                  points: { type: "number" },
+                  hard: { type: "boolean" },
+                  excluded: { type: "boolean" },
+                },
+              },
+            },
+            llm: {
+              type: "object",
+              nullable: true,
+              description: "null when the stage did not run.",
+              properties: {
+                score: { type: "integer", minimum: 0, maximum: 100 },
+                reasoning: { type: "string" },
+                best_angle: { type: "string" },
+                risk: { type: "string" },
+              },
+            },
+          },
+          required: ["total", "qualified", "threshold", "breakdown"],
         },
       },
       responses: {
@@ -472,6 +592,723 @@ export function openApiDocument(version: string): Record<string, unknown> {
               description: "Event stream",
               content: { "text/event-stream": { schema: { type: "string" } } },
             },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+
+      // --- M2: signals -------------------------------------------------------
+      "/companies/{id}/signals": {
+        get: {
+          summary: "Everything ALG knows about a company, with provenance",
+          description:
+            "Provenance names the provider, its version and when the value was fetched. Art. 14 requires being able to name the source, and a filter decision has to stay explainable.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": { description: "Signals" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      // --- M4: onboarding ----------------------------------------------------
+      "/searches/clarify": {
+        post: {
+          summary: "Turn a vague request into a runnable search",
+          description:
+            "Returns at most four questions, chosen by what the spec is still missing. Stateless: send the description and the answers so far, get the remaining questions and the spec built from them. Every question except the category carries a default, so the wizard can always be skipped - guessing an industry would silently narrow the search to something the user never said.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["description"],
+                  properties: {
+                    description: { type: "string", maxLength: 2000 },
+                    target_type: {
+                      type: "string",
+                      enum: ["local_business", "company", "person", "list"],
+                    },
+                    answers: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: ["question_id", "value"],
+                        properties: {
+                          question_id: { type: "string" },
+                          value: {
+                            description: "String, number, boolean, string array, or null.",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Remaining questions and the spec so far",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      questions: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string" },
+                            type: {
+                              type: "string",
+                              enum: ["boolean_or_both", "single_select", "multi_select", "range"],
+                            },
+                            prompt_key: { type: "string" },
+                            options: {
+                              type: "array",
+                              items: {
+                                type: "object",
+                                properties: {
+                                  value: { type: "string" },
+                                  label_key: { type: "string" },
+                                  is_default: { type: "boolean" },
+                                },
+                              },
+                            },
+                            min: { type: "integer" },
+                            max: { type: "integer" },
+                            unit: { type: "string" },
+                            default_value: {
+                              nullable: true,
+                              description: "null means the question cannot be skipped safely.",
+                            },
+                            reason_key: { type: "string" },
+                          },
+                        },
+                      },
+                      spec: { $ref: "#/components/schemas/SearchSpec" },
+                      runnable: {
+                        type: "boolean",
+                        description:
+                          "False means the spec has no geographic constraint yet; Overpass refuses outright without one.",
+                      },
+                      skippable: { type: "boolean" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/searches/preview": {
+        post: {
+          summary: "The spec a run would use, and what it would cost",
+          description:
+            "Separate from the run endpoint on purpose: the cost has to be visible before anything is charged. plan.empty true means no signal was referenced, so no provider runs and the search is free - that is demand-driven execution, not a failure. Signals referenced by an attached rubric are planned exactly like filter references.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["description"],
+                  properties: {
+                    description: { type: "string" },
+                    target_type: { type: "string" },
+                    answers: { type: "array", items: { type: "object" } },
+                    rubric: { $ref: "#/components/schemas/Rubric" },
+                    fill_defaults: { type: "boolean", default: true },
+                    estimated_entities: { type: "integer", minimum: 1, maximum: 100000 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Spec, plan and cost",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      spec: { $ref: "#/components/schemas/SearchSpec" },
+                      runnable: { type: "boolean" },
+                      share_query: {
+                        type: "string",
+                        description: "Query string that decodes back to this exact spec.",
+                      },
+                      applied_defaults: { type: "array", items: { type: "object" } },
+                      unanswered: { type: "array", items: { type: "string" } },
+                      plan: {
+                        type: "object",
+                        properties: {
+                          providers: { type: "array", items: { type: "object" } },
+                          empty: { type: "boolean" },
+                          unresolved: { type: "array", items: { type: "string" } },
+                        },
+                      },
+                      cost: {
+                        type: "object",
+                        properties: {
+                          entities: { type: "integer" },
+                          per_entity_eur: { type: "number" },
+                          total_eur: { type: "number" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/searches/encode": {
+        post: {
+          summary: "Encode a spec as a shareable query string",
+          description:
+            "Readable parameters (category, city, bbox) for the common shape; a base64url blob in `q` for anything a flat parameter list cannot express - an OR branch, a negation, a signal filter. The round trip is guaranteed: decoding always returns the same spec, which is why a bare leaf uses the opaque form rather than coming back wrapped in an AND. Pass opaque: true to force it.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["spec"],
+                  properties: {
+                    spec: { $ref: "#/components/schemas/SearchSpec" },
+                    opaque: { type: "boolean", default: false },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Query string" } },
+        },
+      },
+      "/searches/decode": {
+        post: {
+          summary: "Decode a shared search URL back into a spec",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["query"],
+                  properties: { query: { type: "string", maxLength: 8000 } },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Spec" },
+            "400": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/playbooks": {
+        get: {
+          summary: "Preconfigured starting points",
+          description:
+            "Three playbooks covering three incompatible notions of a good lead - selling websites, replacing an ERP, and market research where every weight is zero. Same engine, no code branching on any of them. `sequence` is null until M5 lands; it is not an empty object, because nothing should suggest messaging exists.",
+          responses: { "200": { description: "Playbooks" } },
+        },
+      },
+      "/playbooks/{slug}/start": {
+        post: {
+          summary: "Instantiate a playbook into the workspace",
+          description:
+            "Creates the search and the rubric and returns both ids, so onboarding is one call rather than three. Everything created is ordinary data the user can edit or delete - a playbook is a starting point, not a binding template.",
+          parameters: [
+            { name: "slug", in: "path", required: true, schema: { type: "string" } },
+            { name: "Idempotency-Key", in: "header", schema: { type: "string" } },
+          ],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { name: { type: "string", maxLength: 160 } },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Search and rubric created",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      playbook: { type: "string" },
+                      search_id: { type: "string", format: "uuid" },
+                      rubric_id: { type: "string", format: "uuid" },
+                      next: {
+                        type: "object",
+                        properties: {
+                          run_search: { type: "string" },
+                          score: { type: "string" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/filters/schema": {
+        get: {
+          summary: "Everything the filter UI can offer, in one document",
+          description:
+            "Merges three sources the frontend would otherwise have to know about separately: the core.* fields discovery supplies (always free), the signals providers produce (priced per entity - referencing one in a filter is what makes its provider run), and the category vocabulary. pushed_down_by names the adapters that can pre-filter at the source; an empty list means the adapter fetches first and filters afterwards, which on a paid source costs more.",
+          parameters: [
+            {
+              name: "target_type",
+              in: "query",
+              description: "Omit to get every field and category.",
+              schema: {
+                type: "string",
+                enum: ["local_business", "company", "person", "list"],
+              },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "Filter schema",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      target_type: { type: "string", nullable: true },
+                      fields: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            key: { type: "string" },
+                            kind: { type: "string", enum: ["core", "signal"] },
+                            type: {
+                              type: "string",
+                              enum: [
+                                "boolean",
+                                "number",
+                                "string",
+                                "string_array",
+                                "date",
+                                "object",
+                              ],
+                            },
+                            operators: {
+                              type: "array",
+                              items: { $ref: "#/components/schemas/Operator" },
+                            },
+                            label_key: {
+                              type: "string",
+                              description: "i18n key; the German string lives in the frontend.",
+                            },
+                            enum_values: { type: "array", items: { type: "string" } },
+                            unit: { type: "string" },
+                            pushed_down_by: { type: "array", items: { type: "string" } },
+                            cost_per_entity_eur: { type: "number" },
+                          },
+                        },
+                      },
+                      categories: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            slug: { type: "string" },
+                            label_key: { type: "string" },
+                            target_type: { type: "string" },
+                          },
+                        },
+                      },
+                      operators: {
+                        type: "array",
+                        items: { $ref: "#/components/schemas/Operator" },
+                      },
+                      unary_operators: {
+                        type: "array",
+                        items: { $ref: "#/components/schemas/Operator" },
+                        description:
+                          "Operators that take no value; render no value input for these.",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/signals/schema": {
+        get: {
+          summary: "What the registry can produce, for the filter UI",
+          parameters: [
+            {
+              name: "target_type",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: ["local_business", "company", "person", "list"],
+              },
+            },
+          ],
+          responses: { "200": { description: "Providers and signal definitions" } },
+        },
+      },
+      "/signals/preview": {
+        post: {
+          summary: "Resolve the signal plan and its cost without running anything",
+          description:
+            "The demand-driven property made visible: a spec that references no signal returns an empty plan and a cost of zero.",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    spec: { type: "object" },
+                    rubric: { type: "object" },
+                    template_variables: { type: "array", items: { type: "string" } },
+                    entities: { type: "integer", minimum: 1, maximum: 100000 },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Plan, references and cost" } },
+        },
+      },
+      "/enrichments": {
+        post: {
+          summary: "Start an enrichment run",
+          description: "Returns 202 with a run id. Poll /v1/enrichments/{id} for progress.",
+          parameters: [{ name: "Idempotency-Key", in: "header", schema: { type: "string" } }],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    company_ids: {
+                      type: "array",
+                      items: { type: "string", format: "uuid" },
+                      maxItems: 1000,
+                    },
+                    all: { type: "boolean" },
+                    spec: { type: "object" },
+                    rubric: { type: "object" },
+                    template_variables: { type: "array", items: { type: "string" } },
+                    force: {
+                      type: "boolean",
+                      description: "Ignores cached values that are still fresh.",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "202": { description: "Run queued" },
+            "400": { $ref: "#/components/responses/Problem" },
+          },
+        },
+        get: {
+          summary: "Recent enrichment runs",
+          parameters: [
+            { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200 } },
+          ],
+          responses: { "200": { description: "Runs" } },
+        },
+      },
+      "/enrichments/{id}": {
+        get: {
+          summary: "One enrichment run, with counters",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": { description: "Run" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+
+      // --- M3: scoring -------------------------------------------------------
+      "/rubrics": {
+        post: {
+          summary: "Create a rubric",
+          description:
+            "A criterion referencing a signal no provider produces is rejected here rather than silently scoring every lead at zero.",
+          parameters: [{ name: "Idempotency-Key", in: "header", schema: { type: "string" } }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["name", "target_type", "definition"],
+                  properties: {
+                    name: { type: "string", maxLength: 160 },
+                    description: { type: "string" },
+                    target_type: {
+                      type: "string",
+                      enum: ["local_business", "company", "person", "list"],
+                    },
+                    definition: { $ref: "#/components/schemas/Rubric" },
+                    template_slug: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": { description: "Created" },
+            "400": { $ref: "#/components/responses/Problem" },
+          },
+        },
+        get: {
+          summary: "List rubrics",
+          parameters: [
+            { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200 } },
+            { name: "cursor", in: "query", schema: { type: "string" } },
+            {
+              name: "target_type",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: ["local_business", "company", "person", "list"],
+              },
+            },
+            { name: "include_archived", in: "query", schema: { type: "boolean" } },
+          ],
+          responses: { "200": { description: "Rubrics" } },
+        },
+      },
+      "/rubrics/templates": {
+        get: {
+          summary: "Seeded starting points",
+          description:
+            "Website sales, ERP replacement and market research. The three demonstrate that the engine has no built-in notion of a good lead.",
+          responses: { "200": { description: "Templates" } },
+        },
+      },
+      "/rubrics/suggest": {
+        post: {
+          summary: "Draft a rubric from a free-text description",
+          description:
+            "not_covered lists what the description asked for that no available signal can express - stated rather than approximated with a proxy. 503 with type llm-not-configured when ANTHROPIC_API_KEY is unset; author the rubric manually in that case.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["description"],
+                  properties: {
+                    description: { type: "string", minLength: 10, maxLength: 4000 },
+                    target_type: {
+                      type: "string",
+                      enum: ["local_business", "company", "person", "list"],
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Draft rubric",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      definition: { $ref: "#/components/schemas/Rubric" },
+                      not_covered: { type: "array", items: { type: "string" } },
+                      rationale: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            "502": { $ref: "#/components/responses/Problem" },
+            "503": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/rubrics/{id}": {
+        get: {
+          summary: "One rubric, with the signals it references",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": { description: "Rubric" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+        patch: {
+          summary: "Edit a rubric",
+          description:
+            "A definition change bumps the version; existing scores keep the version they were computed with and are reported as stale rather than deleted, so hand-labelled feedback survives.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": { description: "Updated" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+        delete: {
+          summary: "Archive a rubric",
+          description: "Archived, not deleted: existing scores must stay explainable.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: { "204": { description: "Archived" } },
+        },
+      },
+      "/rubrics/{id}/score": {
+        post: {
+          summary: "Score companies against this rubric",
+          description:
+            "Returns 202 with a run id. llm_stage reports whether the LLM stage will run: not_used, enabled, or skipped_no_key.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+            { name: "Idempotency-Key", in: "header", schema: { type: "string" } },
+          ],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    company_ids: {
+                      type: "array",
+                      items: { type: "string", format: "uuid" },
+                      maxItems: 1000,
+                    },
+                    all: { type: "boolean" },
+                    force: {
+                      type: "boolean",
+                      description: "Rescores companies already current for this rubric version.",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "202": {
+              description: "Run queued",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      run_id: { type: "string", format: "uuid" },
+                      status: { type: "string" },
+                      companies: { type: "integer" },
+                      llm_stage: {
+                        type: "string",
+                        enum: ["not_used", "enabled", "skipped_no_key"],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "400": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/scoring-runs/{id}": {
+        get: {
+          summary: "One scoring run, with counters and token usage",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": { description: "Run" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/rubrics/{id}/leads": {
+        get: {
+          summary: "The ranked lead list",
+          description:
+            "Keyset pagination on (total, id). A score computed with an older rubric version is returned with stale: true rather than hidden.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+            { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200 } },
+            { name: "cursor", in: "query", schema: { type: "string" } },
+            { name: "qualified_only", in: "query", schema: { type: "boolean" } },
+          ],
+          responses: {
+            "200": { description: "Ranked leads with their breakdown" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/rubrics/{id}/leads/{companyId}/feedback": {
+        put: {
+          summary: "Record the user's verdict on one lead",
+          description: "The input to threshold calibration. Send null to clear.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+            {
+              name: "companyId",
+              in: "path",
+              required: true,
+              schema: { type: "string", format: "uuid" },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["feedback"],
+                  properties: {
+                    feedback: { type: "string", enum: ["good", "bad"], nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Updated score" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/rubrics/{id}/calibration": {
+        get: {
+          summary: "Suggest a corrected threshold from hand-labelled leads",
+          description:
+            "Arithmetic, not an LLM call. reliable is false when there is too little labelled data (fewer than 8 samples, or only one side labelled) - the frontend must not present the number as advice in that case. suspect_criteria distinguishes inverted (the criterion points the wrong way), no_signal (it carries no information) and never_measured (no data, so the provider is the problem, not the rubric).",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          ],
+          responses: {
+            "200": { description: "Calibration result" },
             "404": { $ref: "#/components/responses/Problem" },
           },
         },

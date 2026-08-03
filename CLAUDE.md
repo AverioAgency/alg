@@ -90,6 +90,18 @@ Things that will bite, roughly in order of how expensive the mistake is:
 - **Pin exact image tags and verify they exist.** `node:26.0.1` was never
   published; the build failed with a 404 on the base image. Check first:
   `curl -sI https://hub.docker.com/v2/repositories/library/node/tags/<tag>`
+- **Don't guess which tag names carry meaning — record the shape, don't re-derive
+  it.** `renderOverpassQl` decided what was a category selector by matching the
+  tag name against a fixed regex (`amenity|shop|tourism|office|leisure`).
+  Categories union, everything else intersects, so when M4 added `man_made` and
+  `landuse` an `industrial` search silently became an AND of two tags and matched
+  nothing — no error, just zero results. The planner now records
+  `categoryFilters` instead.
+- **Overpass's public endpoint is unreliable under load, and says so in HTML.**
+  The same query that returned 635 objects failed minutes later with an XHTML
+  error page, not JSON. That is what the retry-and-mirror logic in the adapter is
+  for; when measuring by hand, query serially (the rate limit is 2) and expect to
+  fall back to `overpass.kumi.systems`.
 
 - **Never create RLS policies.** Supabase is used as a plain Postgres. There is no
   anon key in circulation and the frontend never talks to the database. All
@@ -191,6 +203,71 @@ provenance columns on `companies`.
 `web.quality` is deliberately absent: it needs Playwright, which is deferred.
 Migration 0002 adds `enrichments` and `enrichment_runs`.
 
-**M3 next** — scoring: rubric CRUD, a rule evaluator with a full per-criterion
-breakdown, the LLM stage, `POST /v1/rubrics/suggest` and the calibration endpoint.
-Without an Anthropic key the rubric runs rule-only and `llm` stays null.
+**M3 complete** — scoring. The rubric is data; nothing here knows what a good
+lead is.
+
+- **Rule evaluator**: every criterion produces a breakdown entry whether it
+  matched or not, and `actualValue: null` ("never measured") stays distinct from
+  a signal measured as false — otherwise a failed crawl reads as a disqualifying
+  answer. Hard criteria exclude when they do _not_ match. The score is normalized
+  against the sum of positive weights, so adding a criterion does not force the
+  threshold to be retuned.
+- **Acceptance test**: the same four companies rank differently under the three
+  fixture rubrics, and `rank(WEBSITE_SALES)[0] !== rank(ERP_REPLACEMENT)[0]`.
+  Market research weights everything at zero: signals are collected and reported,
+  nothing is ranked.
+- **LLM stage** (`@anthropic-ai/sdk`, Haiku for per-lead work, Sonnet for
+  authoring): JSON via tool use, so the API enforces the schema instead of us
+  guessing at a parse. Only signals the rubric references are sent — a cost
+  property and a correctness one, since a signal the user deliberately left out
+  must not sway the verdict through the prompt. A malformed answer fails that one
+  lead (rule-only score, `llm: null`); auth, rate limit and network errors abort
+  the run, because they will hit every remaining lead too.
+- **`POST /v1/rubrics/suggest`**: drafts a rubric from free text. Signal keys are
+  an `enum` in the schema, and a criterion whose operator does not suit the
+  signal's type is dropped. What the description asked for that no signal can
+  express goes to `not_covered` rather than into an approximate proxy.
+- **Calibration**: arithmetic, not an LLM call — separating two labelled sets has
+  a right answer the user can check. Distinguishes a criterion that points the
+  wrong way (`inverted`), one that carries no information (`no_signal`) and one
+  nobody has data for (`never_measured`, i.e. the provider is the problem).
+  `reliable: false` below 8 samples or when only one side was labelled.
+- **Endpoints**: rubric CRUD, `POST /v1/rubrics/:id/score` → 202,
+  `GET /v1/rubrics/:id/leads` (keyset on `(total, id)`),
+  `PUT .../leads/:companyId/feedback`, `GET /v1/rubrics/:id/calibration`.
+
+Migration 0003 adds `rubrics`, `lead_scores` and `scoring_runs`. Editing a rubric
+bumps its version and marks existing scores `stale` rather than deleting them —
+deleting would destroy the hand-labelled feedback calibration runs on.
+
+**M4 complete** — onboarding: from a vague sentence to a runnable, shareable
+search.
+
+- **Overpass company search**: 18 company categories alongside the local-business
+  vocabulary. `craft_business` maps to the bare key `craft` because the OSM value
+  is the trade itself (`craft=carpenter`), and enumerating the ~70 documented
+  values would go stale. Verified live for the Linz/Wels area: `office=*` 635
+  objects, `craft=*` 246, `man_made=works` 462 — worth searching, thin enough
+  that a company search is a seed list to enrich, not a register.
+- **`GET /v1/filters/schema`**: core fields, signals and categories in one
+  document. Each field carries its cost per entity (core fields are free;
+  referencing a signal is what makes its provider run) and `pushed_down_by`,
+  which names the adapters that can pre-filter at the source. No signal is ever
+  claimed as pushed down — it exists only after its provider ran.
+- **Search URLs**: readable parameters for the common shape, a base64url blob in
+  `q` for anything a flat list cannot express. The round trip is the contract, so
+  a bare leaf uses the opaque form rather than coming back wrapped in an AND.
+  Covered by 400 generated trees.
+- **Clarification**: at most four questions, chosen by what the spec is missing,
+  and stateless — the client sends description plus answers, the server computes.
+  No draft table, so a closed tab leaves nothing behind. Every question has a
+  documented default except the category, because guessing an industry would
+  silently narrow the search. "Website: egal" adds no filter, so the default
+  search stays free.
+- **Playbooks**: three preconfigured starting points, `POST
+/v1/playbooks/:slug/start` creates search and rubric in one call.
+  `sequence` is `null` until M5 — not an empty object, which would suggest
+  messaging exists.
+
+**M5 next** — outreach: channel adapters, sequences, the inbox, and the kill
+switch's first real use.

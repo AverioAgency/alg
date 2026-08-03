@@ -104,3 +104,65 @@ export {
   type EnrichResult,
   type EnrichProgress,
 } from "./signals/enrich.js"
+export {
+  evaluateRubric,
+  explainScore,
+  rankLeads,
+  type EvaluateOptions,
+  type ScoreExplanation,
+} from "./scoring/evaluate.js"
+export {
+  WEBSITE_SALES_RUBRIC,
+  ERP_REPLACEMENT_RUBRIC,
+  MARKET_RESEARCH_RUBRIC,
+  RUBRIC_TEMPLATES,
+  type RubricTemplate,
+} from "./scoring/fixtures.js"
+export {
+  createAnthropicClient,
+  createLlmClientFromEnv,
+  LlmNotConfiguredError,
+  LlmResponseError,
+  type AnthropicClientOptions,
+  type LlmClient,
+  type LlmJsonRequest,
+  type LlmJsonResponse,
+} from "./scoring/llm-client.js"
+export {
+  relevantSignals,
+  runLlmStage,
+  type LlmStageOptions,
+  type LlmStageResult,
+} from "./scoring/llm-stage.js"
+export {
+  parseSuggestion,
+  suggestRubric,
+  type SuggestRubricOptions,
+  type SuggestRubricResult,
+} from "./scoring/suggest.js"
+export {
+  calibrateRubric,
+  type CalibrationResult,
+  type CalibrationSample,
+  type SuspectCriterion,
+} from "./scoring/calibrate.js"
+export {
+  scoreCompanies,
+  type ScoreCompaniesOptions,
+  type ScoreProgress,
+  type ScoreRunResult,
+} from "./scoring/score-run.js"
+export { PLAYBOOKS, playbookBySlug, type Playbook } from "./playbooks/playbooks.js"
+export {
+  applyAnswer,
+  applyDefaults,
+  isRunnable,
+  nextQuestions,
+  startClarification,
+  MAX_QUESTIONS,
+  type ClarifyAnswer,
+  type ClarifyOption,
+  type ClarifyQuestion,
+  type ClarifyState,
+  type QuestionType,
+} from "./clarify/questions.js"

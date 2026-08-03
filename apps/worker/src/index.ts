@@ -8,6 +8,7 @@ import { loadEnv } from "@alg/shared"
 import { DEFAULT_JOB_OPTIONS, JOB_NAMES, QUEUE_NAMES } from "./queues.js"
 import { createDiscoveryWorker } from "./discovery-worker.js"
 import { createEnrichmentWorker } from "./enrichment-worker.js"
+import { createScoringWorker } from "./scoring-worker.js"
 
 const GB = 1024 * 1024 * 1024
 
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
 
   const discoveryWorker = createDiscoveryWorker({ connection, db, env, logger })
   const enrichmentWorker = createEnrichmentWorker({ connection, db, env, logger })
+  const scoringWorker = createScoringWorker({ connection, db, env, logger })
 
   logger.info(
     { queues: Object.values(QUEUE_NAMES), sendingEnabled: env.ALG_SENDING_ENABLED },
@@ -101,6 +103,7 @@ async function main(): Promise<void> {
     // Close consumers before the queue so an in-flight discovery run finishes.
     await discoveryWorker.close()
     await enrichmentWorker.close()
+    await scoringWorker.close()
     await maintenanceWorker.close()
     await maintenance.close()
     await closeDb()

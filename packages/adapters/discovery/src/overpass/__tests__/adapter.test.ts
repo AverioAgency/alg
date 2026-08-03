@@ -56,11 +56,42 @@ function makeAdapter(fetchImpl: ReturnType<typeof fakeFetch>) {
 }
 
 describe("OverpassAdapter", () => {
-  it("declares itself for local_business only", () => {
+  it("declares itself for local businesses and companies", () => {
+    // Companies were added in M4. OSM maps them less completely than shops, so
+    // a company search is a seed list to enrich rather than a register - but
+    // that is a coverage caveat, not a reason to refuse the target type.
     const adapter = makeAdapter(fakeFetch("{}"))
-    expect(adapter.targetTypes).toStrictEqual(["local_business"])
+    expect(adapter.targetTypes).toStrictEqual(["local_business", "company"])
     expect(adapter.supports).toContain("core.geo")
     expect(adapter.supports).toContain("core.category")
+  })
+
+  it("stamps entities with the target type the search asked for", async () => {
+    // The same OSM object is a local_business in one search and a company in
+    // another. Hardcoding local_business here would have made every company
+    // search produce records that dedupe and filter as the wrong type.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    const { entities } = await makeAdapter(fetchImpl).search({
+      ...linzSpec,
+      targetType: "company",
+      filters: {
+        op: "and",
+        children: [
+          { op: "eq", key: "core.category", value: "craft_business" },
+          { op: "within", key: "core.geo", value: { bbox: [48.28, 14.25, 48.33, 14.33] } },
+        ],
+      },
+    })
+
+    expect(entities.length).toBeGreaterThan(0)
+    expect(entities.every((entity) => entity.targetType === "company")).toBe(true)
+  })
+
+  it("defaults to local_business, so existing searches are unaffected", async () => {
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    const { entities } = await makeAdapter(fetchImpl).search(linzSpec)
+
+    expect(entities.every((entity) => entity.targetType === "local_business")).toBe(true)
   })
 
   it("normalizes a recorded response into RawEntities", async () => {

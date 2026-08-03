@@ -18,6 +18,9 @@ import { createCompaniesRouter } from "./routes/companies.js"
 import { createSearchesRouter } from "./routes/searches.js"
 import { createStreamsRouter } from "./routes/streams.js"
 import { createSignalsRouter } from "./routes/signals.js"
+import { createRubricsRouter } from "./routes/rubrics.js"
+import { createClarifyRouter } from "./routes/clarify.js"
+import { createLlmClientFromEnv } from "@alg/core"
 import { buildSignalRegistry } from "@alg/adapters-signals"
 import { openApiDocument } from "./openapi.js"
 
@@ -119,6 +122,16 @@ export function createApp(options: AppOptions): Express {
   const signalRegistry = buildSignalRegistry({ userAgent: env.ALG_USER_AGENT })
   const enrichmentQueue = new Queue("enrichment", { connection: redis })
   app.use("/v1", createSignalsRouter({ db, registry: signalRegistry, enrichmentQueue }))
+
+  // null without a key: the rubric then scores on rules alone and /rubrics/suggest
+  // answers 503 with its own slug, rather than the deployment failing to boot.
+  const llmClient = createLlmClientFromEnv(env)
+  const scoringQueue = new Queue("scoring", { connection: redis })
+  app.use("/v1", createRubricsRouter({ db, registry: signalRegistry, scoringQueue, llmClient }))
+
+  // Stateless: the client sends the description and answers, the server computes
+  // the questions. No draft table and no half-finished wizards left behind.
+  app.use("/v1", createClarifyRouter({ db, registry: signalRegistry }))
 
   app.use(notFoundHandler)
   app.use(createErrorHandler(logger))
