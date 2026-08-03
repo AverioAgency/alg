@@ -354,15 +354,38 @@ TLS-Handshake bricht ab.
 ERR Unable to obtain ACME certificate ... DNS problem: NXDOMAIN looking up A
 ```
 
-Loesung: A-Record auf die Server-IP anlegen (`curl -s https://ifconfig.me`),
-TTL 300, bei Cloudflare **ohne Proxy** (graue Wolke) - sonst terminiert
-Cloudflare TLS und die Challenge erreicht Traefik nie. Danach:
+Loesung: A-Record anlegen, TTL 300, bei Cloudflare **ohne Proxy** (graue Wolke) -
+sonst terminiert Cloudflare TLS und die Challenge erreicht Traefik nie.
+
+Die richtige Ziel-IP ist die einer Domain, die auf diesem Host **bereits**
+funktioniert - nicht die Ausgabe von `ifconfig.me`, die hinter NAT das Gateway
+zeigt:
+
+```bash
+getent hosts db-alg-nexoro.averio.agency   # dieselbe IP fuer den neuen Record
+```
+
+Danach:
 
 ```bash
 getent hosts alg-nexoro.averio.agency   # muss die Server-IP liefern
 docker restart traefik                  # neuer ACME-Versuch
 curl -s https://alg-nexoro.averio.agency/v1/health | jq
 ```
+
+**`Connection refused`, obwohl der A-Record stimmt**
+
+Der Server liegt hinter NAT (private Adresse, z.B. `172.16.20.100`). Viele Router
+kennen kein Hairpin-NAT: ein interner Host kann sich ueber die _oeffentliche_ IP
+nicht selbst erreichen. Von aussen funktioniert es trotzdem.
+
+**Deshalb immer vom eigenen Rechner testen, nicht vom Server:**
+
+```bash
+curl -v https://alg-nexoro.averio.agency/v1/health
+```
+
+Ein `Connection refused` vom Server aus ist in dieser Konstellation kein Befund.
 
 Ob es wirklich am DNS liegt, zeigt der lokale Test - er umgeht DNS und Firewall:
 
