@@ -17,6 +17,20 @@ const booleanFromString = z
 
 const port = z.coerce.number().int().min(1).max(65535)
 
+/**
+ * An optional secret that is legitimately absent until the milestone that needs it.
+ *
+ * `.optional()` alone is not enough: a .env file written by hand almost always
+ * carries `ANTHROPIC_API_KEY=` rather than omitting the line, and an empty string
+ * is a present value that fails a min(1) check. Treating "" as absent is what
+ * makes a partially configured deploy boot instead of dying on a key it does not
+ * use yet.
+ */
+const optionalSecret = z
+  .string()
+  .transform((value) => (value.trim() === "" ? undefined : value))
+  .optional()
+
 export const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "staging", "production"]).default("development"),
   PORT: port.default(3000),
@@ -43,18 +57,24 @@ export const EnvSchema = z.object({
   /** Master key for pgcrypto-encrypted credentials. 32 bytes, base64. */
   ENCRYPTION_MASTER_KEY: z.string().min(32),
 
-  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  ANTHROPIC_API_KEY: optionalSecret,
   ANTHROPIC_MODEL_FAST: z.string().min(1).default("claude-haiku-4-5-20251001"),
   ANTHROPIC_MODEL_SMART: z.string().min(1).default("claude-sonnet-5"),
 
-  GOOGLE_PLACES_API_KEY: z.string().min(1).optional(),
+  GOOGLE_PLACES_API_KEY: optionalSecret,
   OVERPASS_ENDPOINT: z.url().default("https://overpass-api.de/api/interpreter"),
 
-  TWILIO_ACCOUNT_SID: z.string().min(1).optional(),
-  TWILIO_AUTH_TOKEN: z.string().min(1).optional(),
+  TWILIO_ACCOUNT_SID: optionalSecret,
+  TWILIO_AUTH_TOKEN: optionalSecret,
 
-  SCRAPER_URL: z.url().optional(),
-  SCRAPER_TOKEN: z.string().min(1).optional(),
+  // .optional() must wrap the whole chain: the variable may be absent entirely,
+  // present but empty, or present and required to be a valid URL.
+  SCRAPER_URL: z
+    .string()
+    .transform((value) => (value.trim() === "" ? undefined : value))
+    .pipe(z.url().optional())
+    .optional(),
+  SCRAPER_TOKEN: optionalSecret,
 
   /**
    * Global kill switch. When false, every channel adapter throws instead of
@@ -66,7 +86,7 @@ export const EnvSchema = z.object({
   /** User-Agent the crawler identifies itself with. */
   ALG_USER_AGENT: z.string().min(1).default("AlgBot/1.0 (+https://averio.agency/bot)"),
 
-  SENTRY_DSN: z.string().optional(),
+  SENTRY_DSN: optionalSecret,
   PUBLIC_BASE_URL: z.url().default("http://localhost:3000"),
 })
 

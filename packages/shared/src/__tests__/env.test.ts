@@ -75,6 +75,43 @@ describe("EnvSchema", () => {
     }
   })
 
+  it("treats an empty optional key as absent", () => {
+    // A hand-written .env carries "ANTHROPIC_API_KEY=" rather than omitting the
+    // line. Refusing to boot over a key that is not needed until M3 would block
+    // the deploy for no reason.
+    const env = loadEnv({
+      ...VALID,
+      ANTHROPIC_API_KEY: "",
+      GOOGLE_PLACES_API_KEY: "",
+      TWILIO_ACCOUNT_SID: "",
+      TWILIO_AUTH_TOKEN: "",
+      SCRAPER_TOKEN: "",
+      SENTRY_DSN: "",
+      SCRAPER_URL: "",
+    })
+
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.GOOGLE_PLACES_API_KEY).toBeUndefined()
+    expect(env.SCRAPER_URL).toBeUndefined()
+    expect(env.SENTRY_DSN).toBeUndefined()
+  })
+
+  it("still accepts optional keys when they are filled in", () => {
+    const env = loadEnv({
+      ...VALID,
+      ANTHROPIC_API_KEY: "sk-ant-123",
+      SCRAPER_URL: "http://scraper:4000",
+    })
+
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-123")
+    expect(env.SCRAPER_URL).toBe("http://scraper:4000")
+  })
+
+  it("still rejects a malformed optional URL", () => {
+    // Empty means "not configured"; nonsense means someone made a mistake.
+    expect(() => loadEnv({ ...VALID, SCRAPER_URL: "not-a-url" })).toThrow(EnvValidationError)
+  })
+
   it("rejects a short JWT secret", () => {
     expect(() => loadEnv({ ...VALID, SUPABASE_JWT_SECRET: "short" })).toThrow(EnvValidationError)
   })
