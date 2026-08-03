@@ -108,6 +108,16 @@ Pruefen, dass es geklappt hat:
 ls .env.example infra/docker-compose.yml
 ```
 
+Damit die folgenden `docker compose`-Befehle die richtige Datei finden, einmal
+setzen (gilt fuer die aktuelle Shell):
+
+```bash
+cd /opt/alg
+export COMPOSE_FILE=infra/docker-compose.yml
+```
+
+In Schritt 5 kommt moeglicherweise eine zweite Datei dazu.
+
 ---
 
 ## Schritt 3 — Secrets erzeugen
@@ -130,19 +140,19 @@ nano .env
 
 Diese Werte setzen:
 
-| Variable                     | Wert                                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------------------- |
-| `NODE_ENV`                   | `production`                                                                          |
-| `DATABASE_URL`               | `postgresql://postgres:<POSTGRES_PASSWORD>@db-alg-nexoro.averio.agency:5432/postgres` |
-| `SUPABASE_URL`               | `https://db-alg-nexoro.averio.agency`                                                 |
-| `SUPABASE_JWT_SECRET`        | das `JWT_SECRET` deiner Supabase-Instanz                                              |
-| `SUPABASE_SERVICE_ROLE_KEY`  | der `SERVICE_ROLE_KEY`                                                                |
-| `ALG_STORAGE_SIGNING_SECRET` | aus Schritt 3                                                                         |
-| `ENCRYPTION_MASTER_KEY`      | aus Schritt 3                                                                         |
-| `TRAEFIK_NETWORK`            | `edge`                                                                                |
-| `TRAEFIK_ENTRYPOINT`         | aus Schritt 1                                                                         |
-| `TRAEFIK_CERTRESOLVER`       | aus Schritt 1                                                                         |
-| `ALG_DOMAIN`                 | `alg-nexoro.averio.agency`                                                            |
+| Variable                     | Wert                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| `NODE_ENV`                   | `production`                                                                       |
+| `DATABASE_URL`               | wird in Schritt 5 festgelegt — erst dort steht fest, ob Domain oder Container-Name |
+| `SUPABASE_URL`               | `https://db-alg-nexoro.averio.agency`                                              |
+| `SUPABASE_JWT_SECRET`        | das `JWT_SECRET` deiner Supabase-Instanz                                           |
+| `SUPABASE_SERVICE_ROLE_KEY`  | der `SERVICE_ROLE_KEY`                                                             |
+| `ALG_STORAGE_SIGNING_SECRET` | aus Schritt 3                                                                      |
+| `ENCRYPTION_MASTER_KEY`      | aus Schritt 3                                                                      |
+| `TRAEFIK_NETWORK`            | `edge`                                                                             |
+| `TRAEFIK_ENTRYPOINT`         | aus Schritt 1                                                                      |
+| `TRAEFIK_CERTRESOLVER`       | aus Schritt 1                                                                      |
+| `ALG_DOMAIN`                 | `alg-nexoro.averio.agency`                                                         |
 
 `ALG_SENDING_ENABLED` bleibt auf `false` — bis M5 gibt es keinen Versand.
 
@@ -154,9 +164,9 @@ chmod 600 .env
 
 ---
 
-## Schritt 5 — Datenbank erreichbar?
+## Schritt 5 — Datenbank erreichbar machen
 
-Bevor gebaut wird, pruefen ob Postgres ueber die Domain antwortet:
+Zuerst pruefen, ob Postgres ueber die Domain antwortet:
 
 ```bash
 docker run --rm postgres:16-alpine \
@@ -164,9 +174,51 @@ docker run --rm postgres:16-alpine \
   -c "select version();"
 ```
 
-Kommt eine Versionszeile: gut. Kommt `Connection refused` oder ein Timeout, ist der
-Postgres-Port nicht von aussen erreichbar — dann melde dich, dann gehen wir doch
-ueber das interne Docker-Netz.
+**Kommt `Connection refused`, ist das kein Fehler, sondern die Regel.** Supabase
+veroeffentlicht Port 5432 normalerweise nicht nach aussen, damit die Datenbank
+nicht aus dem Internet erreichbar ist. Den Port zu oeffnen waere die falsche
+Antwort darauf — stattdessen haengt sich ALG in dasselbe Docker-Netz.
+
+### Variante B: ueber das interne Docker-Netz
+
+Namen des Postgres-Containers ermitteln:
+
+```bash
+docker ps -a --filter "network=sb-alg-nexoro_default" --format "table {{.Names}}\t{{.Image}}"
+
+# Taucht dort kein Postgres auf, liegt die DB im geteilten Stack:
+docker ps -a --format "table {{.Names}}\t{{.Image}}" | grep -iE "postgres|supabase/postgres"
+```
+
+Den gefundenen Namen in die `.env` eintragen — **statt** der Domain:
+
+```
+DATABASE_URL=postgresql://postgres:<PASSWORT>@<db-container>:5432/postgres
+SUPABASE_NETWORK=sb-alg-nexoro_default
+```
+
+Die Override-Datei muss bei **jedem** compose-Aufruf dabei sein. Deshalb
+`COMPOSE_FILE` aus Schritt 2 erweitern:
+
+```bash
+export COMPOSE_FILE=infra/docker-compose.yml:infra/docker-compose.supabase-net.yml
+```
+
+Das gilt nur fuer die laufende Shell. Nach einem Reconnect erneut setzen — oder
+dauerhaft in `/root/.bashrc` eintragen.
+
+Verbindung aus einem Container im selben Netz testen:
+
+```bash
+docker run --rm --network sb-alg-nexoro_default postgres:16-alpine \
+  psql "postgresql://postgres:<PASSWORT>@<db-container>:5432/postgres" \
+  -c "select version();"
+```
+
+Jetzt sollte die Versionszeile kommen.
+
+> Achtung beim Kopieren: `postgres:<PASSWORT>` ohne Leerzeichen nach dem
+> Doppelpunkt. Ein Leerzeichen macht die Verbindungs-URL ungueltig.
 
 ---
 
@@ -176,7 +228,7 @@ Dauert beim ersten Mal einige Minuten.
 
 ```bash
 cd /opt/alg
-docker compose -f infra/docker-compose.yml build
+docker compose build
 ```
 
 ---
@@ -187,7 +239,7 @@ docker compose -f infra/docker-compose.yml build
 `pgcrypto` und `pg_trgm` an.
 
 ```bash
-docker compose -f infra/docker-compose.yml --profile tools run --rm migrate
+docker compose --profile tools run --rm migrate
 ```
 
 Erwartete Ausgabe: `Migrations applied.`
@@ -208,8 +260,8 @@ Erwartet: `workspaces`, `users`, `workspace_members`, `companies`, `contacts`,
 ## Schritt 8 — Stack starten
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
-docker compose -f infra/docker-compose.yml ps
+docker compose up -d
+docker compose ps
 ```
 
 Erwartet: `api`, `worker`, `scraper`, `redis` laufen. `api` sollte nach ~20 s
@@ -222,7 +274,7 @@ Erwartet: `api`, `worker`, `scraper`, `redis` laufen. `api` sollte nach ~20 s
 Erst von innen, ohne Traefik:
 
 ```bash
-docker compose -f infra/docker-compose.yml exec api \
+docker compose exec api \
   node -e "fetch('http://localhost:3000/v1/health').then(r=>r.json()).then(o=>console.log(JSON.stringify(o,null,2)))"
 ```
 
@@ -290,7 +342,7 @@ Gewollt: eine unvollstaendige Konfiguration faellt sofort auf, statt halb zu
 funktionieren. Das Log nennt jede fehlende Variable einzeln.
 
 ```bash
-docker compose -f infra/docker-compose.yml logs api | tail -30
+docker compose logs api | tail -30
 ```
 
 **Migration haengt oder bricht mit `ECONNREFUSED` ab**
@@ -300,7 +352,7 @@ Die Datenbank ist unter der Domain nicht erreichbar. Schritt 5 wiederholen.
 Die API laeuft noch nicht oder ist unhealthy:
 
 ```bash
-docker compose -f infra/docker-compose.yml logs api --tail 50
+docker compose logs api --tail 50
 ```
 
 ---
@@ -310,9 +362,9 @@ docker compose -f infra/docker-compose.yml logs api --tail 50
 ```bash
 cd /opt/alg
 git pull
-docker compose -f infra/docker-compose.yml build
-docker compose -f infra/docker-compose.yml --profile tools run --rm migrate
-docker compose -f infra/docker-compose.yml up -d
+docker compose build
+docker compose --profile tools run --rm migrate
+docker compose up -d
 ```
 
 Reihenfolge beachten: erst migrieren, dann starten.
@@ -324,8 +376,8 @@ Reihenfolge beachten: erst migrieren, dann starten.
 ```bash
 cd /opt/alg
 git checkout <letzter-guter-commit>
-docker compose -f infra/docker-compose.yml build
-docker compose -f infra/docker-compose.yml up -d
+docker compose build
+docker compose up -d
 ```
 
 Migrationen werden dabei **nicht** zurueckgerollt. Sie sind vorwaertskompatibel

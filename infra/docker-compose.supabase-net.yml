@@ -1,0 +1,38 @@
+# Override: verbindet ALG mit dem Docker-Netz der Supabase-Instanz.
+#
+# Noetig, wenn Postgres seinen Port nicht nach aussen veroeffentlicht - der
+# Normalfall bei Supabase, denn die Datenbank soll nicht aus dem Internet
+# erreichbar sein. Statt den Port zu oeffnen (schlechte Idee) haengt sich ALG in
+# dasselbe Docker-Netz und spricht den Container direkt an.
+#
+# Anwenden, bei JEDEM compose-Aufruf mit angeben:
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.supabase-net.yml up -d
+#
+# In der .env dann den Container-Namen statt der Domain verwenden:
+#   DATABASE_URL=postgresql://postgres:<pw>@<db-container>:5432/postgres
+#
+# Netzname pruefen mit:  docker network ls | grep sb-
+
+services:
+  migrate:
+    networks:
+      - internal
+      - supabase
+
+  api:
+    networks:
+      - proxy
+      - internal
+      - scraping
+      - supabase
+
+  worker:
+    networks:
+      - internal
+      - scraping
+      - supabase
+
+networks:
+  supabase:
+    external: true
+    name: ${SUPABASE_NETWORK:-sb-alg-nexoro_default}
