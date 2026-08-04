@@ -120,6 +120,15 @@ Things that will bite, roughly in order of how expensive the mistake is:
   for; when measuring by hand, query serially (the rate limit is 2) and expect to
   fall back to `overpass.kumi.systems`.
 
+- **Ein erfundener Filterschlüssel ist der teuerste stille Fehler im System.**
+  Das Zod-Schema lässt `key` bewusst frei (`@alg/shared` kennt die Registry
+  nicht), kein Adapter bedient ihn, also landet er im Nachfilter — und dort
+  verwirft ein fehlender Wert jeden Treffer. `found: 0` ohne Fehler. Real
+  passiert mit `geo.state`, `geo.city`, `industry`, `gmb.rating`,
+  `gmb.reviews_count` aus der Sidebar des Frontends; jede Suche mit gesetztem
+  Bundesland lief garantiert leer aus, und die Fehlersuche begann bei den
+  Adaptern. `POST/PATCH /v1/searches` weist unbekannte Schlüssel jetzt mit 400
+  ab und schlägt den nächstliegenden echten vor.
 - **Ein Signalfilter darf die Discovery nicht erreichen.** `web.presence.*`
   entsteht erst bei der Anreicherung; zur Discovery-Zeit fehlt der Wert, und der
   Nachfilter liest das zu Recht als "passt nicht". Die Suche "Betriebe ohne

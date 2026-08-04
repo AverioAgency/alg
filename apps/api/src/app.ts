@@ -181,13 +181,16 @@ export function createApp(options: AppOptions): Express {
   // The API only enqueues discovery work; the worker consumes it.
   const discoveryQueue = new Queue("discovery", { connection: redis })
 
-  app.use("/v1", createCompaniesRouter({ db }))
-  app.use("/v1", createSearchesRouter({ db, discoveryQueue }))
-  app.use("/v1", createStreamsRouter({ db }))
-
   // One registry for the process: the crawler inside it holds the per-host rate
   // limit, which only works if every request goes through the same instance.
+  // Vor den Routen erzeugt, weil /searches sie fuer die Schluesselpruefung
+  // braucht - sie allein kennt die tatsaechlichen Signalnamen.
   const signalRegistry = buildSignalRegistry({ userAgent: env.ALG_USER_AGENT })
+
+  app.use("/v1", createCompaniesRouter({ db }))
+  app.use("/v1", createSearchesRouter({ db, discoveryQueue, signalRegistry }))
+  app.use("/v1", createStreamsRouter({ db }))
+
   const enrichmentQueue = new Queue("enrichment", { connection: redis })
   app.use("/v1", createSignalsRouter({ db, registry: signalRegistry, enrichmentQueue }))
 

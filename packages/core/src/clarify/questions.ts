@@ -93,6 +93,9 @@ export function nextQuestions(state: ClarifyState): ClarifyQuestion[] {
         { value: "salzburg", labelKey: "clarify.region.salzburg" },
         { value: "steiermark", labelKey: "clarify.region.steiermark" },
         { value: "tirol", labelKey: "clarify.region.tirol" },
+        { value: "vorarlberg", labelKey: "clarify.region.vorarlberg" },
+        { value: "kaernten", labelKey: "clarify.region.kaernten" },
+        { value: "burgenland", labelKey: "clarify.region.burgenland" },
         { value: "wien", labelKey: "clarify.region.wien" },
         { value: "austria", labelKey: "clarify.region.austria" },
       ],
@@ -248,7 +251,18 @@ const REGION_BBOX: Record<string, [number, number, number, number]> = {
   salzburg: [46.94, 12.07, 48.08, 13.99],
   steiermark: [46.62, 13.56, 47.84, 16.18],
   tirol: [46.65, 10.1, 47.75, 12.98],
+  vorarlberg: [46.84, 9.53, 47.6, 10.24],
+  kaernten: [46.37, 12.66, 47.16, 15.07],
+  burgenland: [46.84, 16.09, 48.13, 17.16],
   wien: [48.11, 16.18, 48.33, 16.58],
+  /**
+   * Ganz Oesterreich ist eine legitime Wahl, aber eine teure.
+   *
+   * Gemessen: eine Kategorie-Abfrage ueber diese Flaeche (20.2 Quadratgrad)
+   * braucht auf Overpass rund 47s und scheitert unter Last; dasselbe fuer Wien
+   * (0.09) kommt in 4s zurueck. Wer das Land waehlt, soll es bekommen - aber
+   * die Rueckfrage nennt zuerst die Bundeslaender.
+   */
   austria: [46.37, 9.53, 49.02, 17.16],
 }
 

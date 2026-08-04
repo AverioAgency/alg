@@ -61,6 +61,7 @@ export {
   type AdapterSelection,
 } from "./discovery/registry.js"
 export { evaluateFilter, haversineMetres, type EvalOptions } from "./discovery/filter-eval.js"
+export { findUnknownFilterKeys, type UnknownFilterKey } from "./discovery/validate-spec.js"
 export {
   persistEntities,
   normalizeEntity,
