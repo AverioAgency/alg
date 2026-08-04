@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express"
 import { z } from "zod"
-import { rubrics, searches, withWorkspace, type Database } from "@alg/db"
+import { eq } from "drizzle-orm"
+import { rubrics, searches, workspaces, withWorkspace, type Database } from "@alg/db"
 import {
   applyAnswer,
   applyDefaults,
@@ -9,7 +10,12 @@ import {
   nextQuestions,
   planSignals,
   playbookBySlug,
+  applyInterpretation,
+  interpretSearch,
+  KNOWN_REGIONS,
   startClarification,
+  type InterpretedSearch,
+  type LlmClient,
   PLAYBOOKS,
   type ClarifyState,
   type SignalRegistry,
@@ -19,10 +25,16 @@ import {
   PROBLEM_TYPES,
   RubricSchema,
   SearchSpecSchema,
+  OnboardingProfileSchema,
+  categoriesFor,
+  type TargetType,
   decodeSearchSpec,
   encodeSearchSpecToQuery,
+  isOnboardingComplete,
+  type OnboardingProfile,
 } from "@alg/shared"
 import { requireContext } from "../middleware/auth.js"
+import { loadOnboardingProfile } from "./onboarding-profile.js"
 
 /**
  * The clarification flow: draft -> answer -> preview -> run.
@@ -54,9 +66,29 @@ const PreviewSchema = DraftSchema.extend({
   estimated_entities: z.number().int().positive().max(100_000).optional(),
 })
 
+const OnboardingPatchSchema = z.object({
+  /** Partial by design: the wizard saves after each step, not once at the end. */
+  profile: OnboardingProfileSchema.partial().optional(),
+  /** Where the user is, so an interrupted run resumes instead of restarting. */
+  last_step: z.number().int().min(1).max(20).optional(),
+  /**
+   * Set on the final step. Once true the timestamp is never rewritten - a later
+   * save must not be able to un-finish the wizard.
+   */
+  completed: z.boolean().default(false),
+})
+
 export interface ClarifyRouterOptions {
   db: Database
   registry: SignalRegistry
+  /**
+   * Optional: ohne Schluessel liest niemand den Suchtext.
+   *
+   * Der Assistent fragt dann wie bisher nach Region und Branche - unbequemer,
+   * aber vollstaendig funktionsfaehig. Ein fehlender Schluessel ist ein
+   * unvollstaendiges Deployment, kein Defekt.
+   */
+  llmClient?: LlmClient | null
 }
 
 export function createClarifyRouter(options: ClarifyRouterOptions): Router {
@@ -68,11 +100,20 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
    * Called again after every answer: the set of remaining questions depends on
    * what the spec already says, so recomputing beats tracking a cursor.
    */
-  router.post("/searches/clarify", (req: Request, res: Response, next: NextFunction) => {
+  router.post("/searches/clarify", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      requireContext(req)
+      const ctx = requireContext(req)
       const body = DraftSchema.parse(req.body ?? {})
-      const state = buildState(body)
+      const profile = await loadOnboardingProfile(ctx, options.db)
+      // Zuerst lesen, was dasteht - sonst fragt der Assistent nach der Region,
+      // die der Nutzer gerade getippt hat.
+      const interpreted = await interpretIfPossible(
+        body.description,
+        body.target_type,
+        profile,
+        options.llmClient ?? null
+      )
+      const state = buildState(body, profile, interpreted)
 
       const questions = nextQuestions(state)
 
@@ -82,6 +123,11 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
         questions: questions.map(toQuestionResponse),
         spec: state.spec,
         answers: state.answers,
+        // Was aus dem Freitext gelesen wurde. Der Nutzer soll sehen, ob er
+        // richtig verstanden wurde, bevor die Suche laeuft.
+        interpretation: interpreted
+          ? { summary: interpreted.summary, for_rubric: interpreted.forRubric }
+          : null,
         // False means the search cannot run yet - it has no geographic
         // constraint, and Overpass refuses outright without one.
         runnable: isRunnable(state.spec),
@@ -101,12 +147,19 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
    * before anything is charged, and the empty-plan case - a search referencing
    * no signal, which costs nothing - is worth seeing spelled out.
    */
-  router.post("/searches/preview", (req: Request, res: Response, next: NextFunction) => {
+  router.post("/searches/preview", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      requireContext(req)
+      const ctx = requireContext(req)
       const body = PreviewSchema.parse(req.body ?? {})
 
-      let state = buildState(body)
+      const profile = await loadOnboardingProfile(ctx, options.db)
+      const interpreted = await interpretIfPossible(
+        body.description,
+        body.target_type,
+        profile,
+        options.llmClient ?? null
+      )
+      let state = buildState(body, profile, interpreted)
       if (body.fill_defaults) state = applyDefaults(state)
 
       const plan = planSignals({ spec: state.spec, rubric: body.rubric ?? null }, options.registry)
@@ -117,11 +170,16 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
       res.json({
         spec: state.spec,
         runnable: isRunnable(state.spec),
+        // Geht als additionalCriteria in die Rubrik: Wuensche, die keine Quelle
+        // filtern kann, pruef die LLM-Stufe pro Lead.
+        interpretation: interpreted
+          ? { summary: interpreted.summary, for_rubric: interpreted.forRubric }
+          : null,
         // The shareable URL for this search, so a preview can be sent to a
         // colleague before it is run.
         share_query: encodeSearchSpecToQuery(state.spec),
         applied_defaults: body.fill_defaults
-          ? nextQuestions(buildState(body))
+          ? nextQuestions(buildState(body, profile, interpreted))
               .filter((question) => question.defaultValue !== null)
               .map((question) => ({ question_id: question.id, value: question.defaultValue }))
           : [],
@@ -167,6 +225,107 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
       }
 
       res.json({ spec: result.spec, runnable: isRunnable(result.spec) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  /**
+   * The workspace's onboarding state.
+   *
+   * The frontend calls this on every visit to decide whether to offer the
+   * wizard. `completed: false` with a null profile means it was never started;
+   * a `completed_at` means the user reached the end and the entry point goes
+   * away.
+   */
+  router.get("/onboarding", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ctx = requireContext(req)
+      const profile = await loadOnboardingProfile(ctx, options.db)
+
+      res.json({
+        profile,
+        completed: isOnboardingComplete(profile),
+        completed_at: profile?.completedAt ?? null,
+        // Where an interrupted run left off, so the wizard can resume rather
+        // than restart - abandoning at step 5 and being sent back to step 1 is
+        // how a wizard gets abandoned a second time.
+        last_step: profile?.lastStep ?? null,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  /**
+   * Saves progress, and on the last step marks the wizard done.
+   *
+   * Merged rather than replaced: the wizard saves after each step, and a PATCH
+   * carrying only step 3 must not erase what step 2 recorded.
+   */
+  router.patch("/onboarding", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ctx = requireContext(req)
+      const body = OnboardingPatchSchema.parse(req.body ?? {})
+      const existing = await loadOnboardingProfile(ctx, options.db)
+
+      const merged: OnboardingProfile = {
+        ...existing,
+        ...(body.profile ?? {}),
+        // Nested groups merge one level down too, so saving `target` alone does
+        // not drop the `offer` the previous step wrote.
+        ...(body.profile?.company || existing?.company
+          ? { company: { ...existing?.company, ...body.profile?.company } }
+          : {}),
+        ...(body.profile?.offer || existing?.offer
+          ? { offer: { ...existing?.offer, ...body.profile?.offer } }
+          : {}),
+        ...(body.profile?.target || existing?.target
+          ? { target: { ...existing?.target, ...body.profile?.target } }
+          : {}),
+        ...(body.last_step !== undefined ? { lastStep: body.last_step } : {}),
+        // Only ever set here, never cleared by a later save: finishing the
+        // wizard is not something a subsequent step should be able to undo.
+        ...(body.completed
+          ? { completedAt: existing?.completedAt ?? new Date().toISOString() }
+          : {}),
+      }
+
+      const stored = await saveOnboarding(ctx, merged, options.db)
+
+      res.json({
+        profile: stored,
+        completed: isOnboardingComplete(stored),
+        completed_at: stored.completedAt ?? null,
+        last_step: stored.lastStep ?? null,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  /**
+   * Starts the wizard over.
+   *
+   * Clears the profile entirely rather than only the timestamp: a user who asks
+   * to redo onboarding means the answers too, and keeping them would silently
+   * pre-fill the very questions they wanted to revisit.
+   */
+  router.delete("/onboarding", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ctx = requireContext(req)
+
+      await withWorkspace(
+        ctx,
+        async ({ tx }) =>
+          tx
+            .update(workspaces)
+            .set({ onboarding: null, updatedAt: new Date() })
+            .where(eq(workspaces.id, ctx.workspaceId)),
+        options.db
+      )
+
+      res.status(204).end()
     } catch (error) {
       next(error)
     }
@@ -288,20 +447,88 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
   return router
 }
 
+/**
+ * Reads the stored profile back through its schema.
+ *
+ * A parse rather than a cast: the column is jsonb, and a row written by an older
+ * version would otherwise flow into the search builder unvalidated. A profile
+ * that no longer parses is treated as absent, because pre-filling a search from
+ * a shape nobody checked is worse than asking one question again.
+ */
+
+
+async function saveOnboarding(
+  ctx: Parameters<typeof withWorkspace>[0],
+  profile: OnboardingProfile,
+  db: Database
+): Promise<OnboardingProfile> {
+  const validated = OnboardingProfileSchema.parse(profile)
+
+  await withWorkspace(
+    ctx,
+    async ({ tx }) =>
+      tx
+        .update(workspaces)
+        .set({ onboarding: validated, updatedAt: new Date() })
+        .where(eq(workspaces.id, ctx.workspaceId)),
+    db
+  )
+
+  return validated
+}
+
 /** Rebuilds the wizard state from what the client sent. */
-function buildState(body: {
-  description: string
-  target_type: "local_business" | "company" | "person" | "list"
-  // Already narrowed to the accepted union by AnswerSchema.
-  answers: { question_id: string; value: string | string[] | number | boolean | null }[]
-}): ClarifyState {
-  let state = startClarification(body.description, body.target_type)
+function buildState(
+  body: {
+    description: string
+    target_type: "local_business" | "company" | "person" | "list"
+    // Already narrowed to the accepted union by AnswerSchema.
+    answers: { question_id: string; value: string | string[] | number | boolean | null }[]
+  },
+  profile?: OnboardingProfile | null,
+  interpreted?: InterpretedSearch | null
+): ClarifyState {
+  // The profile seeds the state before the user's own answers, so an explicit
+  // answer this time always wins over what onboarding recorded.
+  let state = startClarification(body.description, body.target_type, profile)
+
+  // Dann, was im Suchtext selbst stand: praeziser als das Profil, weil es
+  // dieses Mal gemeint ist.
+  if (interpreted) state = applyInterpretation(state, interpreted)
 
   for (const answer of body.answers) {
     state = applyAnswer(state, { questionId: answer.question_id, value: answer.value })
   }
 
   return state
+}
+
+/**
+ * Liest den Suchtext, wenn ein Modell verfuegbar ist.
+ *
+ * Ohne Schluessel oder bei einem Fehler: null, und der Assistent fragt wie
+ * bisher nach. Ein ausgefallener Modellaufruf darf keine Suche verhindern -
+ * er macht sie nur weniger bequem.
+ */
+async function interpretIfPossible(
+  description: string,
+  targetType: TargetType,
+  registryProfile: OnboardingProfile | null,
+  client: LlmClient | null
+): Promise<InterpretedSearch | null> {
+  if (!client || description.trim().length < 3) return null
+
+  try {
+    return await interpretSearch({
+      client,
+      description,
+      categories: categoriesFor(targetType),
+      regions: KNOWN_REGIONS,
+      profile: registryProfile,
+    })
+  } catch {
+    return null
+  }
 }
 
 function toQuestionResponse(question: ReturnType<typeof nextQuestions>[number]) {

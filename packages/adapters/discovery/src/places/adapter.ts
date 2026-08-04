@@ -35,7 +35,19 @@ const PlaceSchema = z.object({
       z.object({
         longText: z.string(),
         shortText: z.string().optional(),
-        types: z.array(z.string()),
+        /**
+         * Optional, obwohl Googles Doku es als Pflichtfeld fuehrt.
+         *
+         * In echten Antworten fehlt es gelegentlich, und weil Zod die ganze
+         * Antwort verwirft, kostete ein einziger unvollstaendiger Datensatz
+         * alle 20 Treffer der Seite - der Lauf endete bei null gefundenen
+         * Firmen, obwohl Google geliefert hatte.
+         *
+         * Gelesen wird das Feld nur mit .includes() ("welche Komponente ist die
+         * Stadt?"), da bedeutet ein fehlender Wert schlicht "passt nicht". Der
+         * Vorgabewert macht daraus einen harmlosen Fall statt eines Fehlers.
+         */
+        types: z.array(z.string()).default([]),
       })
     )
     .optional(),
@@ -50,8 +62,14 @@ const PlaceSchema = z.object({
   businessStatus: z.string().optional(),
 })
 
+/**
+ * Die Huelle der Antwort, absichtlich locker.
+ *
+ * `places` bleibt hier ungetypt und wird eintragsweise geprueft (siehe search):
+ * ein einzelner unvollstaendiger Datensatz darf nicht die ganze Seite kosten.
+ */
 const TextSearchResponseSchema = z.object({
-  places: z.array(PlaceSchema).optional(),
+  places: z.array(z.unknown()).optional(),
   nextPageToken: z.string().optional(),
 })
 
@@ -165,7 +183,21 @@ export class PlacesAdapter implements DiscoveryAdapter {
       regionCode: this.regionCode,
       maxResultCount: Math.min(limit, this.pricing.pageSize),
     }
-    if (plan.locationBias) body.locationRestriction = plan.locationBias
+    /**
+     * Ein Kreis gehoert zu locationBias, nicht zu locationRestriction.
+     *
+     * Die Text-Search-API ist da streng: locationRestriction akzeptiert
+     * ausschliesslich ein Rechteck ("rectangular Viewport"), waehrend
+     * locationBias beides nimmt. Wir bauen aus der bbox einen Kreis (toLocationBias)
+     * und haben ihn als locationRestriction geschickt - Google antwortete
+     * folgerichtig mit HTTP 400, und zwar bei jeder Suche mit Geo-Filter.
+     *
+     * Der Unterschied ist nicht nur formal: restriction schliesst alles
+     * ausserhalb aus, bias gewichtet nur. Fuer eine Lead-Suche ist bias das
+     * richtige Verhalten - ein Betrieb knapp ausserhalb der gerundeten bbox ist
+     * immer noch ein Treffer.
+     */
+    if (plan.locationBias) body.locationBias = plan.locationBias
     if (cursor) body.pageToken = cursor
 
     const response = await this.fetchImpl(this.endpoint, {
@@ -181,8 +213,18 @@ export class PlacesAdapter implements DiscoveryAdapter {
     })
 
     if (response.status !== 200) {
-      // Never echo the body: it can contain the API key in an error envelope.
-      throw new Error(`Google Places responded with ${response.status}`)
+      /**
+       * Googles Begruendung mitgeben, aber nur die Begruendung.
+       *
+       * Der rohe Body darf nicht ins Log: Google spiegelt bei manchen Fehlern
+       * die Anfrage zurueck, und darin steckt der API-Schluessel. Die Felder
+       * `error.message` und `error.status` enthalten ihn nie - und ohne sie
+       * stand hier nur "responded with 400", was einen Konfigurationsfehler von
+       * einem falsch gebauten Request ununterscheidbar macht.
+       */
+      throw new Error(
+        `Google Places responded with ${response.status}${describePlacesError(response.body)}`
+      )
     }
 
     let parsed: unknown
@@ -197,9 +239,40 @@ export class PlacesAdapter implements DiscoveryAdapter {
       throw new Error(`Google Places returned an unexpected shape: ${result.error.message}`)
     }
 
-    const entities = (result.data.places ?? [])
-      .map((place) => toRawEntity(place))
+    /**
+     * Ein unlesbarer Eintrag kostet nicht die ganze Seite.
+     *
+     * Die Antwort wird bewusst zweistufig geprueft: die Huelle streng (ist das
+     * ueberhaupt eine Places-Antwort?), die einzelnen Eintraege einzeln. Vorher
+     * war `places` streng typisiert, und ein Datensatz ohne
+     * `addressComponents[].types` liess alle 20 Treffer der Seite durchfallen -
+     * der Lauf endete bei null Firmen, obwohl Google geliefert hatte.
+     *
+     * Google fuegt Felder hinzu und laesst sie in Einzelfaellen weg; ein
+     * Lead-Import muss das aushalten. Was nicht lesbar ist, wird gezaehlt und
+     * uebersprungen, statt den Rest mitzureissen.
+     */
+    const raw = Array.isArray(result.data.places) ? result.data.places : []
+    const skipped: string[] = []
+
+    const entities = raw
+      .map((candidate) => {
+        const place = PlaceSchema.safeParse(candidate)
+        if (!place.success) {
+          skipped.push(place.error.issues[0]?.path.join(".") ?? "unbekannt")
+          return null
+        }
+        return toRawEntity(place.data)
+      })
       .filter((entity): entity is RawEntity => entity !== null)
+
+    if (skipped.length > 0 && entities.length === 0) {
+      // Alles verworfen: dann ist es kein Einzelfall, sondern eine
+      // Formatänderung - und die soll auffallen statt still zu null zu fuehren.
+      throw new Error(
+        `Google Places: kein einziger von ${raw.length} Treffern war lesbar (Felder: ${[...new Set(skipped)].join(", ")})`
+      )
+    }
 
     return result.data.nextPageToken
       ? { entities, cursor: result.data.nextPageToken }
@@ -246,7 +319,17 @@ export function planPlacesQuery(spec: SearchSpec): PlacesQueryPlan {
     }
 
     switch (node.key) {
-      case "core.category":
+      case "core.category": {
+        const values = Array.isArray(node.value) ? node.value : [node.value]
+        const usable = values.filter((v): v is string => typeof v === "string" && v.length > 0)
+        if (usable.length > 0) {
+          // Uebersetzt, nicht durchgereicht: siehe PLACES_CATEGORY_QUERY.
+          words.push(...usable.map((slug) => PLACES_CATEGORY_QUERY[slug] ?? slug.replace(/_/g, " ")))
+        } else {
+          plan.unsupported.push(node.key)
+        }
+        break
+      }
       case "core.name":
       case "core.city": {
         const values = Array.isArray(node.value) ? node.value : [node.value]
@@ -283,6 +366,94 @@ function keysOf(node: FilterNode): string[] {
   return isLeafNode(node) ? [node.key] : []
 }
 
+/**
+ * Liest Googles Fehlergrund aus dem Antwort-Body - aber nur `error.status`.
+ *
+ * `error.message` waere aussagekraeftiger und ist trotzdem tabu: Google
+ * schreibt den API-Schluessel hinein ("API key not valid: AIza..."), was ein
+ * bestehender Test hier festhaelt. `status` ist dagegen ein festes Enum
+ * (INVALID_ARGUMENT, PERMISSION_DENIED, RESOURCE_EXHAUSTED, ...) und kann
+ * konstruktionsbedingt kein Geheimnis tragen.
+ *
+ * Das genuegt fuer die Diagnose: INVALID_ARGUMENT heisst "wir bauen den Request
+ * falsch", PERMISSION_DENIED "der Schluessel stimmt nicht oder die API ist nicht
+ * freigeschaltet". Vorher stand nur "responded with 400" - und die beiden Faelle
+ * waren nicht unterscheidbar.
+ */
+function describePlacesError(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (typeof parsed !== "object" || parsed === null) return ""
+    const error = Reflect.get(parsed, "error")
+    if (typeof error !== "object" || error === null) return ""
+
+    const status = Reflect.get(error, "status")
+    // Nur der Enum-Wert, und auch der nur, wenn er wie einer aussieht.
+    return typeof status === "string" && /^[A-Z_]{3,40}$/.test(status) ? ` (${status})` : ""
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Kategorie-Slug -> Suchbegriff, den Google versteht.
+ *
+ * Die Slugs sind quellenneutrale Bezeichner; Overpass bildet sie auf OSM-Tags
+ * ab, Places braucht Text. Ohne diese Tabelle ging der Slug woertlich in die
+ * Anfrage: Google suchte nach der Zeichenkette "car_repair" und fand
+ * erwartungsgemaess fast nichts. Der Unterschied ist gross - "car_repair"
+ * liefert Einzeltreffer, "Autowerkstatt" eine volle Seite.
+ *
+ * Deutsch, weil languageCode/regionCode auf AT stehen und die Betriebe hier so
+ * heissen. Was fehlt, faellt auf den Slug mit Leerzeichen statt Unterstrichen
+ * zurueck ("estate agent") - unschoen, aber suchbar, und eine neue Kategorie
+ * bricht nichts.
+ */
+const PLACES_CATEGORY_QUERY: Record<string, string> = {
+  restaurant: "Restaurant",
+  cafe: "Café",
+  bar: "Bar",
+  hotel: "Hotel",
+  bakery: "Bäckerei",
+  butcher: "Fleischerei",
+  hairdresser: "Friseur",
+  supermarket: "Supermarkt",
+  pharmacy: "Apotheke",
+  doctor: "Arztpraxis",
+  dentist: "Zahnarzt",
+  car_repair: "Autowerkstatt",
+  car_dealer: "Autohaus",
+  florist: "Blumengeschäft",
+  optician: "Optiker",
+  furniture: "Möbelhaus",
+  hardware: "Baumarkt",
+  clothes: "Bekleidungsgeschäft",
+  electronics: "Elektronikgeschäft",
+  craft: "Handwerksbetrieb",
+  gym: "Fitnessstudio",
+  veterinary: "Tierarzt",
+  company: "Unternehmen",
+  office: "Büro",
+  craft_business: "Handwerksbetrieb",
+  industrial: "Produktionsbetrieb",
+  wholesale: "Großhandel",
+  it_company: "IT-Unternehmen",
+  lawyer: "Rechtsanwalt",
+  accountant: "Steuerberater",
+  insurance: "Versicherung",
+  estate_agent: "Immobilienmakler",
+  architect: "Architekturbüro",
+  engineer: "Ingenieurbüro",
+  advertising: "Werbeagentur",
+  logistics: "Spedition",
+  research: "Forschungsinstitut",
+  employment_agency: "Personalvermittlung",
+  financial: "Finanzdienstleister",
+}
+
+/** Googles Obergrenze fuer den Bias-Radius. Darueber verfaelscht ein Kreis die Frage. */
+const PLACES_MAX_BIAS_RADIUS_M = 50_000
+
 function toLocationBias(value: unknown): PlacesQueryPlan["locationBias"] {
   if (typeof value !== "object" || value === null) return undefined
   const spec = value as { lat?: unknown; lon?: unknown; radiusMetres?: unknown; bbox?: unknown }
@@ -296,7 +467,24 @@ function toLocationBias(value: unknown): PlacesQueryPlan["locationBias"] {
     const latSpanM = Math.abs((north as number) - (south as number)) * 111_320
     const lonSpanM =
       Math.abs((east as number) - (west as number)) * 111_320 * Math.cos((lat * Math.PI) / 180)
-    const radius = Math.min(50_000, Math.sqrt(latSpanM ** 2 + lonSpanM ** 2) / 2)
+    const radius = Math.sqrt(latSpanM ** 2 + lonSpanM ** 2) / 2
+
+    /**
+     * Ein zu grosses Gebiet bekommt gar keinen Bias, statt eines falschen.
+     *
+     * Places kappt den Radius bei 50 km. Aus "Restaurants in Oesterreich"
+     * (Halbdiagonale 322 km) wurde damit ein 50-km-Kreis um 47.7/13.3 - das
+     * Salzburger Bergland, ueberwiegend Alpen. Die Suche lieferte folgerichtig
+     * genau einen Treffer und sah aus, als gaebe es in Oesterreich keine
+     * Restaurants.
+     *
+     * locationBias gewichtet nur, es schliesst nichts aus. Ihn wegzulassen
+     * heisst also "such im ganzen Sprachraum" und nicht "such woanders" -
+     * deutlich naeher an der Frage als ein Kreis um einen Punkt, den niemand
+     * gemeint hat. Die Region steckt ohnehin im textQuery.
+     */
+    if (radius > PLACES_MAX_BIAS_RADIUS_M) return undefined
+
     return { circle: { center: { latitude: lat, longitude: lon }, radius } }
   }
 

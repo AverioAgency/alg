@@ -108,15 +108,24 @@ Pruefen, dass es geklappt hat:
 ls .env.example infra/docker-compose.yml
 ```
 
-Damit die folgenden `docker compose`-Befehle die richtige Datei finden, einmal
-setzen (gilt fuer die aktuelle Shell):
+Alle compose-Aufrufe laufen ueber `./infra/alg.sh`. Das Skript setzt die
+Dateiliste selbst zusammen — inklusive des Supabase-Overrides aus Schritt 5 —
+und reicht alles Weitere an `docker compose` durch:
 
 ```bash
 cd /opt/alg
-export COMPOSE_FILE=infra/docker-compose.yml
+./infra/alg.sh ps
+./infra/alg.sh up -d
+./infra/alg.sh logs -f --tail=50 api worker
 ```
 
-In Schritt 5 kommt moeglicherweise eine zweite Datei dazu.
+Der frueher hier empfohlene `export COMPOSE_FILE=...` gilt nur fuer die laufende
+Shell. Nach einem Reconnect war er weg, ein `docker compose -f
+infra/docker-compose.yml up -d` startete die Container ohne Supabase-Netz, und
+der Fehler zeigte sich nicht als fehlendes Netzwerk, sondern als
+`getaddrinfo EAI_AGAIN` und HTTP 500 auf jeder Route, die die Datenbank braucht
+— waehrend `/health` und `/docs` weiterliefen. Das Skript macht diesen Fehler
+unmoeglich; benutze es statt direkter `docker compose`-Aufrufe.
 
 ---
 
@@ -197,15 +206,10 @@ DATABASE_URL=postgresql://postgres:<PASSWORT>@<db-container>:5432/postgres
 SUPABASE_NETWORK=sb-alg-nexoro_default
 ```
 
-Die Override-Datei muss bei **jedem** compose-Aufruf dabei sein. Deshalb
-`COMPOSE_FILE` aus Schritt 2 erweitern:
-
-```bash
-export COMPOSE_FILE=infra/docker-compose.yml:infra/docker-compose.supabase-net.yml
-```
-
-Das gilt nur fuer die laufende Shell. Nach einem Reconnect erneut setzen — oder
-dauerhaft in `/root/.bashrc` eintragen.
+Die Override-Datei muss bei **jedem** compose-Aufruf dabei sein. `./infra/alg.sh`
+haengt sie automatisch an, sobald `SUPABASE_NETWORK` in der `.env` steht, und
+bricht mit einer klaren Meldung ab, wenn das genannte Netz nicht existiert —
+statt einen Stack zu starten, der erst beim ersten Datenbankzugriff umfaellt.
 
 Verbindung aus einem Container im selben Netz testen:
 

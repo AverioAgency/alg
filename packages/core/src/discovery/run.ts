@@ -1,5 +1,13 @@
 import { type Database } from "@alg/db"
-import { type DiscoveryAdapter, type RawEntity, type SearchSpec } from "@alg/shared"
+import {
+  type DiscoveryAdapter,
+  type FilterNode,
+  type RawEntity,
+  type SearchSpec,
+  isBranchNode,
+  isLeafNode,
+  isNotNode,
+} from "@alg/shared"
 import { dedupeBatch, toDedupeCandidate } from "./dedupe.js"
 import { evaluateFilter } from "./filter-eval.js"
 import { normalizeEntity, persistEntities, type PersistResult } from "./persist.js"
@@ -16,7 +24,14 @@ import { type DiscoveryRegistry } from "./registry.js"
 
 export type ProgressEvent =
   | { type: "adapter_started"; adapterId: string }
-  | { type: "adapter_finished"; adapterId: string; found: number; costEur: number }
+  | {
+      type: "adapter_finished"
+      adapterId: string
+      /** Was die Quelle lieferte, vor den Nachfiltern. */
+      returned: number
+      found: number
+      costEur: number
+    }
   | { type: "adapter_failed"; adapterId: string; reason: string }
   | { type: "progress"; found: number; persisted: number }
 
@@ -38,7 +53,22 @@ export interface RunDiscoveryResult {
   created: number
   duplicates: number
   costEur: number
-  adapters: { adapterId: string; found: number; costEur: number; error?: string }[]
+  /**
+   * Pro Adapter, und zwar mit beiden Zahlen.
+   *
+   * `returned` ist, was die Quelle geliefert hat, `found` was nach den
+   * Nachfiltern uebrig blieb. Ohne die Unterscheidung sieht "Overpass kennt
+   * dieses Gebiet nicht" genauso aus wie "500 Treffer, alle vom Filter
+   * verworfen" - beides stand als found: 0 im Lauf, und die Diagnose begann
+   * jedesmal bei null. Die Differenz benennt den Schuldigen sofort.
+   */
+  adapters: {
+    adapterId: string
+    returned: number
+    found: number
+    costEur: number
+    error?: string
+  }[]
   outcomes: PersistResult["outcomes"]
 }
 
@@ -62,7 +92,9 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
   const limit = spec.limit ?? 1000
   const collected: RawEntity[] = []
 
-  for (const { adapter, postFiltered } of selections) {
+  // `postFiltered` bleibt in der Auswahl - der Worker meldet es als Diagnose -,
+  // steuert hier aber nichts mehr: gefiltert wird immer (siehe unten).
+  for (const { adapter } of selections) {
     if (options.signal?.aborted) break
     if (collected.length >= limit) break
 
@@ -75,6 +107,7 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
       // a paid API still costs the same as a whole one.
       result.adapters.push({
         adapterId: adapter.id,
+        returned: 0,
         found: 0,
         costEur: 0,
         error: "budget_exceeded",
@@ -87,18 +120,33 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
     try {
       const entities = await fetchFromAdapter(adapter, spec, limit - collected.length, options)
 
-      // Filters the adapter could not push down are applied here, against the
-      // fields the adapter actually returned.
-      const kept =
-        postFiltered.length > 0
-          ? entities.filter((entity) => evaluateFilter(spec.filters, toFilterValues(entity)))
-          : entities
+      /**
+       * Immer nachfiltern, nicht nur bei `postFiltered`.
+       *
+       * `postFiltered` stammt aus der statischen `supports`-Liste des Adapters -
+       * einer Absichtserklaerung. Ob die Quelle den Filter *tatsaechlich*
+       * angewendet hat, steht dort nicht. Google Places nennt `core.geo` als
+       * unterstuetzt, laesst den Ortsbezug bei einem zu grossen Gebiet aber weg
+       * (der Bias-Radius ist auf 50 km begrenzt) - und dann filtert niemand
+       * mehr. So landeten bei einer Suche in Oesterreich Treffer aus
+       * Neubrandenburg und Pafos in der Liste.
+       *
+       * Ein zweites Mal zu pruefen kostet nichts: die Werte liegen im
+       * Arbeitsspeicher, und ein Treffer, der die Bedingung wirklich erfuellt,
+       * ueberlebt beide Pruefungen. Ein Treffer, der sie nicht erfuellt, hatte
+       * hier ohnehin nichts verloren.
+       */
+      const applicable = discoveryTimeFilters(spec.filters)
+      const kept = applicable
+        ? entities.filter((entity) => keepsEntity(applicable, entity))
+        : entities
 
       collected.push(...kept)
       result.found += kept.length
       result.costEur += estimate.estimatedCostEur
       result.adapters.push({
         adapterId: adapter.id,
+        returned: entities.length,
         found: kept.length,
         costEur: estimate.estimatedCostEur,
       })
@@ -106,13 +154,20 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
       await options.onProgress?.({
         type: "adapter_finished",
         adapterId: adapter.id,
+        returned: entities.length,
         found: kept.length,
         costEur: estimate.estimatedCostEur,
       })
     } catch (error) {
       // One failing source must not lose the results of the others.
       const reason = error instanceof Error ? error.message : String(error)
-      result.adapters.push({ adapterId: adapter.id, found: 0, costEur: 0, error: reason })
+      result.adapters.push({
+        adapterId: adapter.id,
+        returned: 0,
+        found: 0,
+        costEur: 0,
+        error: reason,
+      })
       await options.onProgress?.({ type: "adapter_failed", adapterId: adapter.id, reason })
     }
   }
@@ -185,6 +240,154 @@ async function fetchFromAdapter(
  * Flattens an entity into the key space post-filters address. Only core.* keys
  * exist at this stage - signal keys are filled in by the M2 provider layer.
  */
+/**
+ * Entfernt alles aus dem Filterbaum, was zur Discovery-Zeit noch nicht existiert.
+ *
+ * Ein Signalfilter (`web.presence.has_website`, `legal.impressum.*`) beschreibt
+ * eine Eigenschaft, die erst die Anreicherung ermittelt - der Adapter liefert
+ * Kernfelder und sonst nichts. Der Nachfilter bewertet einen fehlenden Wert
+ * jedoch als "passt nicht", und zwar zu Recht: sonst wuerde ein nie gemessenes
+ * Signal als erfuellt durchgehen.
+ *
+ * Beides zusammen hiess: die Suche "Betriebe ohne Website" verwarf jeden
+ * einzelnen Treffer, den sie gerade bezahlt hatte, und meldete null - ohne
+ * Fehler, nicht zu unterscheiden von einer leeren Gegend. Der Filter war nicht
+ * falsch, er war nur zu frueh dran.
+ *
+ * Signalbedingungen greifen weiterhin, nur spaeter: die Anreicherung fuellt sie,
+ * die Rubrik bewertet sie. Hier bleiben sie aussen vor.
+ *
+ * Ein Knoten, von dem nichts uebrig bleibt, wird zu `null` - der Aufrufer
+ * filtert dann gar nicht, statt gegen einen leeren AND-Knoten zu pruefen.
+ */
+export function discoveryTimeFilters(node: FilterNode | undefined): FilterNode | null {
+  if (!node) return null
+
+  if (isBranchNode(node)) {
+    const children = node.children
+      .map((child) => discoveryTimeFilters(child))
+      .filter((child): child is FilterNode => child !== null)
+
+    if (children.length === 0) return null
+    if (children.length === 1) return children[0] ?? null
+    return { ...node, children }
+  }
+
+  if (isNotNode(node)) {
+    const child = discoveryTimeFilters(node.child)
+    // Die Negation einer Bedingung, die wir nicht pruefen koennen, ist selbst
+    // nicht pruefbar - und nicht etwa "trifft zu".
+    return child === null ? null : { ...node, child }
+  }
+
+  return isCoreKey(node.key) ? node : null
+}
+
+/**
+ * Kernfelder liefert jeder Adapter direkt; alles andere entsteht spaeter.
+ *
+ * Bewusst nach Praefix statt gegen eine Liste bekannter Signale: ein neuer
+ * Provider bringt neue Schluessel mit, und die duerfen nicht dadurch in die
+ * Discovery geraten, dass jemand vergisst, sie hier einzutragen.
+ */
+function isCoreKey(key: string): boolean {
+  return key.startsWith("core.")
+}
+
+/**
+ * Wendet den Filter an, ohne einen Treffer an fehlenden Feldern scheitern zu lassen.
+ *
+ * Der Unterschied zu `evaluateFilter` allein: ein Feld, das die Quelle gar
+ * nicht geliefert hat, gilt hier nicht als "passt nicht". Google Places fuehrt
+ * `location` als optional - eine Linzer Firma ohne Koordinaten wuerde von einer
+ * strengen bbox-Pruefung verworfen, obwohl sie genau das ist, wonach gesucht
+ * wurde.
+ *
+ * Fuer `core.geo` gibt es einen zweiten Weg: liegt keine Koordinate vor, aber
+ * ein Laendercode, entscheidet der. Das faengt den Fall ab, der die Liste
+ * unbrauchbar machte (Pafos und Neubrandenburg in einer Oesterreich-Suche),
+ * ohne einen brauchbaren Treffer wegen eines fehlenden Feldes zu opfern.
+ */
+function keepsEntity(filters: FilterNode, entity: RawEntity): boolean {
+  const values = toFilterValues(entity)
+
+  if (evaluateFilter(filters, values)) return true
+
+  // Nur der Geo-Fall bekommt eine zweite Chance, und nur wenn die Koordinate
+  // wirklich fehlt - eine vorhandene, aber ausserhalb liegende ist eine Absage.
+  if (entity.geo) return false
+
+  const bbox = firstGeoBbox(filters)
+  if (!bbox) return false
+
+  const country = entity.address?.country
+  if (typeof country !== "string" || country.length === 0) {
+    /**
+     * Weder Koordinate noch Land: behalten.
+     *
+     * Ein Treffer ohne jede Ortsangabe ist nicht widerlegt, nur unbelegt - und
+     * die Quelle hat ihn auf eine Anfrage mit Ortsbezug hin geliefert. Ihn hier
+     * zu verwerfen hiesse, unvollstaendige Daten wie eine Absage zu behandeln;
+     * genau diese Verwechslung hat schon einmal eine ganze Ergebnisliste
+     * gekostet. Was falsch liegt und es *zeigt*, fliegt raus - der Rest bleibt.
+     */
+    return true
+  }
+
+  return countriesInBbox(bbox).has(country.toUpperCase())
+}
+
+/** Die erste bbox im Baum - Suchen haben in der Praxis genau eine. */
+function firstGeoBbox(node: FilterNode): number[] | null {
+  if (isBranchNode(node)) {
+    for (const child of node.children) {
+      const found = firstGeoBbox(child)
+      if (found) return found
+    }
+    return null
+  }
+  if (isNotNode(node)) return null
+  if (!isLeafNode(node) || node.key !== "core.geo") return null
+
+  const value = node.value
+  if (typeof value !== "object" || value === null) return null
+  const bbox = Reflect.get(value, "bbox")
+  return Array.isArray(bbox) && bbox.length === 4 ? bbox.map(Number) : null
+}
+
+/**
+ * Welche Laender eine bbox beruehrt.
+ *
+ * Bewusst grob und bewusst kurz: die Liste deckt den deutschsprachigen Raum ab,
+ * in dem gesucht wird. Ein unbekanntes Land heisst "nicht sicher drin" und
+ * damit raus - lieber ein Treffer weniger als ein Restaurant auf Zypern in
+ * einer Suche nach Baufirmen in Linz.
+ */
+const COUNTRY_BOXES: { code: string; bbox: [number, number, number, number] }[] = [
+  { code: "AT", bbox: [46.37, 9.53, 49.02, 17.16] },
+  { code: "DE", bbox: [47.27, 5.87, 55.06, 15.04] },
+  { code: "CH", bbox: [45.82, 5.96, 47.81, 10.49] },
+  { code: "LI", bbox: [47.05, 9.47, 47.27, 9.64] },
+  { code: "IT", bbox: [36.65, 6.63, 47.09, 18.52] },
+  { code: "SI", bbox: [45.42, 13.38, 46.88, 16.61] },
+  { code: "SK", bbox: [47.73, 16.83, 49.61, 22.57] },
+  { code: "CZ", bbox: [48.55, 12.09, 51.06, 18.86] },
+  { code: "HU", bbox: [45.74, 16.11, 48.59, 22.9] },
+]
+
+function countriesInBbox(bbox: number[]): Set<string> {
+  const [south = 0, west = 0, north = 0, east = 0] = bbox
+
+  return new Set(
+    COUNTRY_BOXES.filter((entry) => {
+      const [cs, cw, cn, ce] = entry.bbox
+      // Ueberschneidung, nicht Enthaltensein: eine Suche ueber Oberoesterreich
+      // beruehrt auch Bayern, und eine Firma mit DE ist dort plausibel.
+      return cs <= north && cn >= south && cw <= east && ce >= west
+    }).map((entry) => entry.code)
+  )
+}
+
 function toFilterValues(entity: RawEntity): Record<string, unknown> {
   const values: Record<string, unknown> = {
     "core.name": entity.name,

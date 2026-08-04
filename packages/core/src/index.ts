@@ -61,6 +61,7 @@ export {
   type AdapterSelection,
 } from "./discovery/registry.js"
 export { evaluateFilter, haversineMetres, type EvalOptions } from "./discovery/filter-eval.js"
+export { findUnknownFilterKeys, type UnknownFilterKey } from "./discovery/validate-spec.js"
 export {
   persistEntities,
   normalizeEntity,
@@ -156,6 +157,7 @@ export { PLAYBOOKS, playbookBySlug, type Playbook } from "./playbooks/playbooks.
 export {
   applyAnswer,
   applyDefaults,
+  applyProfile,
   isRunnable,
   nextQuestions,
   startClarification,
@@ -166,3 +168,5 @@ export {
   type ClarifyState,
   type QuestionType,
 } from "./clarify/questions.js"
+export { applyInterpretation, KNOWN_REGIONS } from "./clarify/questions.js"
+export { interpretSearch, type InterpretedSearch } from "./clarify/interpret.js"

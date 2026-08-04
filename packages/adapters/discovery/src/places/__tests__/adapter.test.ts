@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
-import { type SearchSpec } from "@alg/shared"
+import { categoriesFor, type SearchSpec } from "@alg/shared"
 import { PlacesAdapter, planPlacesQuery, toRawEntity } from "../adapter.js"
 import { estimatePlacesCost, CURRENT_PLACES_PRICING } from "../pricing.js"
 
@@ -130,7 +130,10 @@ describe("PlacesAdapter", () => {
     const init = fetchImpl.mock.calls[0]?.[1] as { body: string }
     const body: unknown = JSON.parse(init.body)
     expect((body as { textQuery: string }).textQuery).toBe("Restaurant Linz")
-    expect((body as { locationRestriction?: unknown }).locationRestriction).toBeDefined()
+    // locationBias, nicht locationRestriction: die Text-Search-API akzeptiert
+    // bei restriction nur ein Rechteck, wir schicken einen Kreis. Als
+    // restriction ergab das HTTP 400 bei jeder Suche mit Geo-Filter.
+    expect((body as { locationBias?: unknown }).locationBias).toBeDefined()
   })
 
   it("passes a cursor through as a page token", async () => {
@@ -159,8 +162,125 @@ describe("PlacesAdapter", () => {
   })
 
   it("rejects an unexpected response shape", async () => {
-    const adapter = makeAdapter(fakeFetch(JSON.stringify({ places: [{ noId: true }] })))
+    const adapter = makeAdapter(fakeFetch(JSON.stringify({ notAPlacesResponse: true, places: 7 })))
     await expect(adapter.search(linzSpec)).rejects.toThrow(/unexpected shape/)
+  })
+
+  it("skips a single unreadable record instead of losing the page", async () => {
+    // Genau der Fall aus der Produktion: Google liefert bei einem Eintrag
+    // keine addressComponents[].types. Vorher fiel dadurch die komplette
+    // Antwort durch die Validierung und die Suche endete bei null Firmen.
+    const adapter = makeAdapter(
+      fakeFetch(
+        JSON.stringify({
+          places: [
+            { noId: true },
+            {
+              id: "places/ok",
+              displayName: { text: "Gasthaus Krone" },
+              formattedAddress: "Landstrasse 1, 4020 Linz",
+              addressComponents: [{ longText: "Linz" }],
+            },
+          ],
+        })
+      )
+    )
+
+    const result = await adapter.search(linzSpec)
+    expect(result.entities).toHaveLength(1)
+    expect(result.entities[0]?.name).toBe("Gasthaus Krone")
+  })
+
+  it("fails loudly when no record at all is readable", async () => {
+    // Ein Ausfall ist ein Einzelfall, zwanzig sind eine Formataenderung -
+    // die soll auffallen statt still zu null Treffern zu fuehren.
+    const adapter = makeAdapter(
+      fakeFetch(JSON.stringify({ places: [{ noId: true }, { alsoNoId: true }] }))
+    )
+    await expect(adapter.search(linzSpec)).rejects.toThrow(/kein einziger/)
+  })
+})
+
+describe("category slugs become words Google can search", () => {
+  // Der Slug ging vorher woertlich raus: Google suchte nach der Zeichenkette
+  // "car_repair" und lieferte Einzeltreffer statt einer vollen Seite.
+  it("translates a slug into a real search term", () => {
+    const plan = planPlacesQuery({
+      targetType: "local_business",
+      filters: { op: "eq", key: "core.category", value: "car_repair" },
+    })
+    expect(plan.textQuery).toBe("Autowerkstatt")
+  })
+
+  it("never sends an underscore to the API", () => {
+    // Auch fuer eine Kategorie, die niemand in die Tabelle eingetragen hat:
+    // "estate agent" ist suchbar, "estate_agent" nicht.
+    for (const category of categoriesFor("local_business").concat(categoriesFor("company"))) {
+      const plan = planPlacesQuery({
+        targetType: category.targetType,
+        filters: { op: "eq", key: "core.category", value: category.slug },
+      })
+      expect(plan.textQuery, `${category.slug} -> ${plan.textQuery}`).not.toContain("_")
+    }
+  })
+
+  it("combines category and city into one query", () => {
+    const plan = planPlacesQuery({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [
+          { op: "eq", key: "core.category", value: "restaurant" },
+          { op: "eq", key: "core.city", value: "Wien" },
+        ],
+      },
+    })
+    expect(plan.textQuery).toBe("Restaurant Wien")
+  })
+})
+
+describe("an area too large for a location bias", () => {
+  /**
+   * "Restaurants in Oesterreich" lieferte genau einen Treffer. Places kappt den
+   * Bias-Radius bei 50 km, aus der Halbdiagonale von 322 km wurde also ein
+   * 50-km-Kreis um 47.7/13.3 - Salzburger Bergland, ueberwiegend Alpen. Der
+   * Bias beantwortete eine andere Frage als die gestellte.
+   */
+  const austria: SearchSpec = {
+    targetType: "local_business",
+    filters: {
+      op: "and",
+      children: [
+        { op: "eq", key: "core.category", value: "restaurant" },
+        { op: "within", key: "core.geo", value: { bbox: [46.37, 9.53, 49.02, 17.16] } },
+      ],
+    },
+    limit: 10,
+  }
+
+  it("sends no bias rather than one around a point nobody meant", async () => {
+    const fetchImpl = fakeFetch(await readFile(join(FIXTURES, "linz-restaurants.json"), "utf8"))
+    await makeAdapter(fetchImpl).search(austria)
+
+    const init = fetchImpl.mock.calls[0]?.[1] as { body: string }
+    const body: unknown = JSON.parse(init.body)
+    expect((body as { locationBias?: unknown }).locationBias).toBeUndefined()
+  })
+
+  it("leaves the bbox to the post-filter, which cuts exactly", () => {
+    // core.geo landet in unsupported - der Aufrufer filtert nach, statt sich
+    // auf einen Kreis zu verlassen, der die Frage verfaelscht.
+    const plan = planPlacesQuery(austria)
+    expect(plan.unsupported).toContain("core.geo")
+  })
+
+  it("still biases an area Places can represent", async () => {
+    const fetchImpl = fakeFetch(await readFile(join(FIXTURES, "linz-restaurants.json"), "utf8"))
+    await makeAdapter(fetchImpl).search(linzSpec)
+
+    const init = fetchImpl.mock.calls[0]?.[1] as { body: string }
+    const body: unknown = JSON.parse(init.body)
+    expect((body as { locationBias?: unknown }).locationBias).toBeDefined()
   })
 })
 
@@ -268,5 +388,77 @@ describe("toRawEntity", () => {
   it("keeps the raw payload for later re-normalization", () => {
     const entity = toRawEntity({ id: "x", displayName: { text: "Test" }, rating: 4.5 })
     expect(entity?.raw).toMatchObject({ id: "x", rating: 4.5 })
+  })
+})
+
+describe("the request body Google actually accepts", () => {
+  it("sends a circle as locationBias, never as locationRestriction", async () => {
+    // Die Text-Search-API akzeptiert bei locationRestriction ausschliesslich ein
+    // Rechteck. Wir bauen aus der bbox einen Kreis - als restriction geschickt
+    // ergab das HTTP 400 bei jeder Suche mit Geo-Filter.
+    const fetchImpl = fakeFetch(JSON.stringify({ places: [] }))
+    await makeAdapter(fetchImpl).search({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [
+          { op: "eq", key: "core.category", value: "restaurant" },
+          { op: "within", key: "core.geo", value: { bbox: [48.1, 13.95, 48.35, 14.4] } },
+        ],
+      },
+    })
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body ?? "{}"))
+    expect(body.locationBias?.circle).toBeDefined()
+    expect(body.locationRestriction).toBeUndefined()
+  })
+
+  it("names Googles error status, not just the HTTP code", async () => {
+    // "responded with 400" macht einen Konfigurationsfehler von einem falsch
+    // gebauten Request ununterscheidbar. INVALID_ARGUMENT sagt "wir bauen den
+    // Request falsch", PERMISSION_DENIED "der Schluessel stimmt nicht".
+    const fetchImpl = fakeFetch(
+      JSON.stringify({
+        error: { status: "INVALID_ARGUMENT", message: "Invalid location restriction." },
+      }),
+      400
+    )
+
+    await expect(
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "eq", key: "core.category", value: "restaurant" },
+      })
+    ).rejects.toThrow(/400 \(INVALID_ARGUMENT\)/)
+  })
+
+  it("leaves error.message out entirely, because Google puts the key in it", async () => {
+    // Nicht hypothetisch: Google antwortet mit "API key not valid: AIza...".
+    // Deshalb nur der Enum-Wert, nie der Freitext.
+    const fetchImpl = fakeFetch(
+      JSON.stringify({
+        error: { status: "PERMISSION_DENIED", message: "API key not valid: AIzaSyGEHEIM" },
+      }),
+      403
+    )
+
+    const attempt = () =>
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "eq", key: "core.category", value: "restaurant" },
+      })
+
+    await expect(attempt()).rejects.toThrow(/PERMISSION_DENIED/)
+    await expect(attempt()).rejects.not.toThrow(/AIzaSyGEHEIM/)
+  })
+
+  it("stays usable when the error body is not JSON at all", async () => {
+    const fetchImpl = fakeFetch("<html>502 Bad Gateway</html>", 502)
+    await expect(
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "eq", key: "core.category", value: "restaurant" },
+      })
+    ).rejects.toThrow(/502/)
   })
 })

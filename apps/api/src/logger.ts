@@ -9,6 +9,16 @@ const REDACT_PATHS = [
   "req.headers.authorization",
   "req.headers.cookie",
   "req.headers['x-supabase-token']",
+  /**
+   * Der Service-Token ist eine Mandantengrenze, kein Komfortmerkmal.
+   *
+   * Wer ihn hat, kann fuer jeden Workspace handeln. Er stand im Klartext in
+   * jeder Zeile des Request-Logs - pino-http loggt die Header vollstaendig, und
+   * die Liste hier kannte nur x-supabase-token. Aufgefallen ist es, als ein
+   * Fehlerlog zum Debuggen weitergereicht wurde: damit war das Geheimnis
+   * unterwegs. Ein Log wandert weiter als der Prozess, der es schreibt.
+   */
+  "req.headers['x-alg-service-token']",
   "req.headers['idempotency-key']",
   "res.headers['set-cookie']",
   "*.email",

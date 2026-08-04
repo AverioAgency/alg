@@ -323,7 +323,29 @@ export function renderOverpassQl(plan: OverpassQueryPlan, timeoutSeconds = 60): 
   // categories is recorded by the planner rather than guessed from the tag name.
   const categoryFilters = plan.categoryFilters
   const otherFilters = plan.tagFilters.filter((f) => !categoryFilters.includes(f))
-  const selectors = categoryFilters.length > 0 ? categoryFilters : [""]
+
+  /**
+   * With no category chosen, search the business tags rather than everything.
+   *
+   * An empty selector renders as `node(bbox); way(bbox); relation(bbox);`, which
+   * asks Overpass for *every object in the area* - every tree, every lamp post,
+   * every building outline. Over a province that is millions of elements: the
+   * query dies on the server's time limit, the adapter retries it across three
+   * endpoints, and the user waits minutes for nothing.
+   *
+   * `["name"]` is barely better and was measured as the worst option of all -
+   * 105s against a mirror for Upper Austria, because every named street and
+   * hamlet matches. These five tags are what actually carries a business, and
+   * the same query returns in seconds.
+   */
+  const ALL_BUSINESS_SELECTORS = [
+    '["shop"]',
+    '["amenity"]',
+    '["craft"]',
+    '["office"]',
+    '["tourism"]',
+  ]
+  const selectors = categoryFilters.length > 0 ? categoryFilters : ALL_BUSINESS_SELECTORS
 
   const parts: string[] = []
   for (const selector of selectors) {

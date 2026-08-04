@@ -83,6 +83,25 @@ function compare(op: Operator, actual: unknown, expected: unknown, options: Eval
 
 function looseEquals(a: unknown, b: unknown): boolean {
   if (a === b) return true
+
+  /**
+   * Ein Skalar gegen eine Liste ist eine Frage nach Mitgliedschaft.
+   *
+   * `core.category` ist mehrwertig - ein Lokal ist zugleich restaurant und
+   * cafe, und toFilterValues reicht darum ein Array herein. Ein Nutzerfilter
+   * ist dagegen einwertig ("Kategorie = restaurant"). Ohne diesen Zweig traf
+   * kein einziger Vergleich zu: der Adapter lieferte 500 Objekte, der
+   * Nachfilter verwarf alle, und der Lauf meldete "0 Treffer" ohne Fehler -
+   * ununterscheidbar von einer Gegend, in der es nichts gibt.
+   *
+   * Nur eine Seite wird entpackt. Liste gegen Liste bleibt Gleichheit, dafuer
+   * gibt es `intersects`.
+   */
+  if (Array.isArray(a) !== Array.isArray(b)) {
+    const [list, scalar] = Array.isArray(a) ? [a, b] : [b as unknown[], a]
+    return list.some((item) => looseEquals(item, scalar))
+  }
+
   // Sources are inconsistent about numeric strings ("20" vs 20); compare by value.
   if (typeof a === "number" && typeof b === "string") return a === Number(b)
   if (typeof a === "string" && typeof b === "number") return Number(a) === b

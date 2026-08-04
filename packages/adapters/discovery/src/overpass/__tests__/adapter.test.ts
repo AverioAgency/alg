@@ -192,6 +192,42 @@ describe("OverpassAdapter", () => {
   })
 })
 
+describe("a runtime error that arrives as HTTP 200", () => {
+  /**
+   * Der Fall, der "Restaurants in Oesterreich" dreimal leer zurueckgab:
+   * Overpass meldet ein Zeitlimit mit Status 200, leerer Elementliste und dem
+   * Grund in `remark`. Wer nur den Status prueft, liest das als "es gibt dort
+   * keine Restaurants" - eine erfolgreiche Antwort auf eine Abfrage, die nie
+   * gelaufen ist.
+   */
+  const timedOut = JSON.stringify({
+    version: 0.6,
+    elements: [],
+    remark: 'runtime error: Query timed out in "query" at line 1 after 36 seconds.',
+  })
+
+  it("treats it as a failure instead of an empty region", async () => {
+    const adapter = makeAdapter(fakeFetch(timedOut))
+    await expect(adapter.search(linzSpec)).rejects.toThrow(/timed out/i)
+  })
+
+  it("says what to do about it", async () => {
+    const adapter = makeAdapter(fakeFetch(timedOut))
+    await expect(adapter.search(linzSpec)).rejects.toThrow(/Gebiet/)
+  })
+
+  it("keeps results that arrive with a remark attached", async () => {
+    // remark traegt gelegentlich auch Hinweise zu einer geglueckten Abfrage.
+    // Treffer wegzuwerfen, weil eine Anmerkung dabeisteht, waere schlimmer.
+    const fixture: { elements: unknown[]; remark?: string } = JSON.parse(
+      await loadFixture("linz-restaurants.json")
+    )
+    fixture.remark = "some advisory note"
+    const { entities } = await makeAdapter(fakeFetch(JSON.stringify(fixture))).search(linzSpec)
+    expect(entities).toHaveLength(4)
+  })
+})
+
 describe("OverpassAdapter resilience", () => {
   /** Returns the given responses in order, so a retry sees a different one. */
   function sequencedFetch(responses: { status: number; body: string }[]) {
@@ -269,6 +305,32 @@ describe("OverpassAdapter resilience", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
+  it("calls throttling by its name", async () => {
+    // 429/504 auf allen Endpunkten heisst "kein Slot frei", nicht "Dienst tot".
+    // Die alte Meldung ("unavailable") schickte die Fehlersuche in den Adapter,
+    // waehrend dieselbe Abfrage von einer anderen IP in Sekunden durchlief.
+    const fetchImpl = sequencedFetch([{ status: 429, body: "slot limit" }])
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).rejects.toThrow(/drosselt/)
+  })
+
+  it("waits seconds before retrying, not a second", async () => {
+    // Overpass gibt Slots im Zehnersekundenbereich frei; 1s war kein Backoff.
+    const slept: number[] = []
+    const adapter = new OverpassAdapter({
+      endpoint: "https://primary.test/api/interpreter",
+      userAgent: "AlgBot/1.0",
+      fetchImpl: sequencedFetch([{ status: 429, body: "slot limit" }]) as never,
+      fallbackEndpoints: [],
+      maxAttempts: 2,
+      sleep: async (ms) => {
+        slept.push(ms)
+      },
+    })
+
+    await expect(adapter.search(linzSpec)).rejects.toThrow()
+    expect(slept[0]).toBeGreaterThanOrEqual(5_000)
+  })
+
   it("names every endpoint it tried when all of them fail", async () => {
     const fetchImpl = sequencedFetch([{ status: 504, body: "busy" }])
 
@@ -299,6 +361,94 @@ describe("OverpassAdapter resilience", () => {
     expect(entities).toHaveLength(4)
     // An unreachable host is not worth a second attempt; move on immediately.
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the worst case bounded, because a user is waiting", async () => {
+    // Die volle Zeit bekommt nur der erste Versuch. Sonst multipliziert sie
+    // sich mit Versuchen und Endpunkten (2x75s + 2x2x15s = 3.5 Minuten).
+    const fetchImpl = sequencedFetch([{ status: 504, body: "busy" }])
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).rejects.toThrow()
+
+    const timeouts = fetchImpl.mock.calls.map(
+      (call) => (call[1] as { timeoutMs: number }).timeoutMs
+    )
+    const total = timeouts.reduce((sum, value) => sum + value, 0)
+    expect(total).toBeLessThanOrEqual(150_000)
+    // Der erste Versuch bekommt trotzdem die volle Zeit - ein ganzes Land
+    // braucht sie (Oesterreich: 47s gemessen).
+    expect(timeouts[0]).toBeGreaterThanOrEqual(75_000)
+    expect(timeouts[1]).toBeLessThan(timeouts[0] ?? 0)
+  })
+
+  it("gives a mirror less time than the primary endpoint", async () => {
+    // Gemessen haengen beide Mirrors ohne ein einziges Byte, bis jemand
+    // abbricht. Mit demselben Zeitlimit wie der Hauptendpunkt wartet der
+    // Nutzer zweimal 45s auf Hosts, die nichts liefern werden.
+    const fixture = await loadFixture("linz-restaurants.json")
+    const fetchImpl = sequencedFetch([
+      { status: 504, body: "busy" },
+      { status: 504, body: "busy" },
+      { status: 200, body: fixture },
+    ])
+
+    await resilientAdapter(fetchImpl).search(linzSpec)
+
+    const primaryTimeout = (fetchImpl.mock.calls[0]?.[1] as { timeoutMs: number }).timeoutMs
+    const mirrorTimeout = (fetchImpl.mock.calls[2]?.[1] as { timeoutMs: number }).timeoutMs
+    expect(mirrorTimeout).toBeLessThan(primaryTimeout)
+  })
+
+  it("leaves Overpass room to answer before our own timeout fires", async () => {
+    // Beide bei 45s hiess: wir brechen genau dann ab, wenn der Server seine
+    // Antwort - und sei es eine Fehlermeldung - schicken wuerde. Ein
+    // serverseitiger Abbruch nennt den Grund, unserer sagt nur "aborted".
+    const fetchImpl = sequencedFetch([
+      { status: 200, body: await loadFixture("linz-restaurants.json") },
+    ])
+
+    await resilientAdapter(fetchImpl).search(linzSpec)
+
+    const call = fetchImpl.mock.calls[0]?.[1] as { body: string; timeoutMs: number }
+    const declared = /\[timeout:(\d+)\]/.exec(decodeURIComponent(call.body))?.[1]
+    expect(Number(declared) * 1000).toBeLessThan(call.timeoutMs)
+  })
+})
+
+describe("refusing a branch Overpass does not know", () => {
+  // OSM hat kein Tag fuer "it_services". Ohne diese Pruefung faellt die Query
+  // auf alle Geschaefte des Bundeslandes zurueck, um danach jedes Objekt zu
+  // verwerfen - die teuerste Abfrage mit garantiert leerem Ergebnis, und der
+  // Grund fuer 504er bei null Treffern.
+  const unknownBranch: SearchSpec = {
+    targetType: "local_business",
+    filters: {
+      op: "and",
+      children: [
+        { op: "eq", key: "core.category", value: "it_services" },
+        { op: "within", key: "core.geo", value: { bbox: [48.0, 13.0, 48.7, 14.6] } },
+      ],
+    },
+    limit: 50,
+  }
+
+  it("says so instead of searching everything", async () => {
+    const fetchImpl = fakeFetch("{}")
+    await expect(makeAdapter(fetchImpl).search(unknownBranch)).rejects.toThrow(/Branche/)
+    // Vor allem: es geht keine Abfrage raus.
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it("still allows an open search over a small area", async () => {
+    // Ohne Branchenwunsch bleibt die offene Suche erlaubt - nur eine
+    // *unbekannte* Branche ist ein Fehler.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    await expect(
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "within", key: "core.geo", value: { bbox: [48.28, 14.25, 48.33, 14.33] } },
+        limit: 50,
+      })
+    ).resolves.toBeDefined()
   })
 })
 
@@ -359,5 +509,59 @@ describe("toRawEntity", () => {
       tags: { name: "X", amenity: "restaurant", shop: "deli" },
     })
     expect(entity?.categories).toStrictEqual(["amenity=restaurant", "shop=deli"])
+  })
+})
+
+describe("refusing a query Overpass cannot answer", () => {
+  it("rejects an open search over a whole province before sending it", async () => {
+    // Gemessen: ohne Branche scheitert Oberoesterreich (rund 3 Quadratgrad) nach
+    // 8-13s serverseitig, auf jedem Endpunkt. Der Adapter probiert danach zwei
+    // Mirrors durch - der Lauf haengt minutenlang und endet bei null Treffern.
+    // Frueh mit einem umsetzbaren Hinweis zu scheitern ist besser.
+    const adapter = makeAdapter(fakeFetch("{}"))
+
+    await expect(
+      adapter.search({
+        targetType: "local_business",
+        filters: {
+          op: "and",
+          children: [
+            { op: "within", key: "core.geo", value: { bbox: [47.42, 12.75, 48.78, 15.0] } },
+          ],
+        },
+      })
+    ).rejects.toThrow(/zu groß/)
+  })
+
+  it("allows the same area once a category narrows it", async () => {
+    // craft=* ueber ganz Oberoesterreich kam in 5s zurueck - die Grenze gilt nur
+    // fuer die offene Suche.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    const { entities } = await makeAdapter(fetchImpl).search({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [
+          { op: "within", key: "core.geo", value: { bbox: [47.42, 12.75, 48.78, 15.0] } },
+          { op: "eq", key: "core.category", value: "restaurant" },
+        ],
+      },
+    })
+
+    expect(entities.length).toBeGreaterThan(0)
+  })
+
+  it("allows an open search over a city-sized area", async () => {
+    // Raum Linz/Wels: 500 Objekte in 6s.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    const { entities } = await makeAdapter(fetchImpl).search({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [{ op: "within", key: "core.geo", value: { bbox: [48.1, 13.95, 48.35, 14.4] } }],
+      },
+    })
+
+    expect(entities.length).toBeGreaterThan(0)
   })
 })

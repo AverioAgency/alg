@@ -8,6 +8,15 @@ outreach from it.
 another repository. The interface to it is: the REST API, the OpenAPI 3.1 document
 at `GET /v1/openapi.json`, and the `@alg/shared` package.
 
+A human-readable reference of every endpoint is served at `GET /docs`
+(<https://alg-nexoro.averio.agency/docs>) — generated from the same OpenAPI
+document, so it cannot describe a route that does not exist.
+
+Two ways in, both ending at the same `req.ctx`: a Supabase JWT plus
+`x-workspace-id`, or — for the Nexoro PHP backend — a service token plus the
+acting user, with the workspace resolved from the subdomain. `infra/FRONTEND.md`
+has the integration guide.
+
 ## Core concepts
 
 - **Target type** (`local_business | company | person | list`) decides which
@@ -97,16 +106,139 @@ Things that will bite, roughly in order of how expensive the mistake is:
   `landuse` an `industrial` search silently became an AND of two tags and matched
   nothing — no error, just zero results. The planner now records
   `categoryFilters` instead.
+- **429/504 von Overpass heisst "kein Slot frei", nicht "Dienst kaputt".** Der
+  Dienst hält zwei gleichzeitige Abfragen pro IP. Nach mehreren Testläufen
+  hintereinander lehnt er dieselbe Abfrage ab, die von einer anderen IP in
+  Sekunden durchläuft — nachgewiesen mit der Wien-bbox: auf dem Server 504,
+  vom Entwicklungsrechner HTTP 200 in 4–11s. Der Adapter wartete zwischen den
+  Versuchen 1s, was kein Backoff ist, sondern Nachlegen; jetzt 5s × Versuch.
+  Die Fehlermeldung sagt "drosselt" statt "unavailable" — letzteres las sich
+  wie ein Ausfall und schickte die Fehlersuche stundenlang in den Adapter.
 - **Overpass's public endpoint is unreliable under load, and says so in HTML.**
   The same query that returned 635 objects failed minutes later with an XHTML
   error page, not JSON. That is what the retry-and-mirror logic in the adapter is
   for; when measuring by hand, query serially (the rate limit is 2) and expect to
   fall back to `overpass.kumi.systems`.
 
+- **Ein Kategorie-Slug ist kein Suchbegriff.** Die Slugs sind quellenneutrale
+  Bezeichner; Overpass bildet sie auf OSM-Tags ab, Places braucht Text. Ohne
+  `PLACES_CATEGORY_QUERY` ging `car_repair` wörtlich an Google, das dann nach
+  dieser Zeichenkette suchte und Einzeltreffer lieferte statt einer vollen
+  Seite. Ein Test prüft, dass kein Slug mit Unterstrich die API erreicht.
+- **Der Suchtext ist Eingabe, nicht Dekoration.** Die Beschreibung landete in
+  einem Feld und wurde nie gelesen — wer "Baufirmen in Linz" eintippte, wurde
+  danach gefragt, in welcher Region er suchen wolle. `interpretSearch()` liest
+  daraus Region, Ort, Branche und Limit; was keine Quelle filtern kann
+  (Mitarbeiterzahl, Umsatz) geht als `forRubric` an die LLM-Stufe, statt
+  stillschweigend zu verschwinden. Ohne `ANTHROPIC_API_KEY` fragt der Assistent
+  wie bisher nach — unbequemer, aber vollständig funktionsfähig.
+- **Ohne Onboarding-Kontext entwirft die KI die falsche Rubrik.** `suggestRubric`
+  bekommt jetzt `profile`: ohne zu wissen, wer sucht und was er verkauft, bewertet
+  das Modell "gute Firma im Allgemeinen" statt "passt zu diesem Anbieter". Eine
+  Werbeagentur und ein Großhändler suchen im selben Gebiet völlig verschiedene
+  Betriebe.
+- **Bewerten reichert nicht an.** `POST /rubrics/:id/score` liest die
+  `enrichments`-Tabelle, mehr nicht — und das ist richtig so, denn Anreicherung
+  kostet Zeit und teils Geld und gehört nicht stillschweigend in eine
+  Bewertung. Der Aufrufer muss `POST /v1/enrichments` davorschalten, sonst
+  steht in jeder Zeile der Aufschlüsselung `actualValue: null` ("nicht
+  gemessen") und jeder Lead bekommt 0 Punkte. Die Rubrik mitzuschicken ist der
+  richtige Weg: der Planer leitet daraus ab, welche Provider laufen müssen —
+  eine feste Signalliste im Client veraltet bei der ersten Rubrikänderung.
+- **Eine leere Rubrik schaltet auch die Datenbeschaffung ab.** Weil die
+  Anreicherung bedarfsgetrieben läuft, startet ein Provider nur, wenn etwas
+  seine Signale referenziert. `criteria: []` heißt deshalb nicht nur "kein
+  Scoring", sondern auch: keine Website, kein Impressum, keine E-Mail wird je
+  gesucht. Jeder Lead bekam 0 Punkte und blieb datenlos. Wer eine Rubrik
+  automatisch anlegt, nimmt `POST /v1/rubrics/suggest` oder eine echte
+  Standardrubrik — niemals eine leere.
+- **Ein erfundener Filterschlüssel ist der teuerste stille Fehler im System.**
+  Das Zod-Schema lässt `key` bewusst frei (`@alg/shared` kennt die Registry
+  nicht), kein Adapter bedient ihn, also landet er im Nachfilter — und dort
+  verwirft ein fehlender Wert jeden Treffer. `found: 0` ohne Fehler. Real
+  passiert mit `geo.state`, `geo.city`, `industry`, `gmb.rating`,
+  `gmb.reviews_count` aus der Sidebar des Frontends; jede Suche mit gesetztem
+  Bundesland lief garantiert leer aus, und die Fehlersuche begann bei den
+  Adaptern. `POST/PATCH /v1/searches` weist unbekannte Schlüssel jetzt mit 400
+  ab und schlägt den nächstliegenden echten vor.
+- **Ein Signalfilter darf die Discovery nicht erreichen.** `web.presence.*`
+  entsteht erst bei der Anreicherung; zur Discovery-Zeit fehlt der Wert, und der
+  Nachfilter liest das zu Recht als "passt nicht". Die Suche "Betriebe ohne
+  Website" verwarf damit jeden Treffer, den sie gerade bezahlt hatte.
+  `discoveryTimeFilters()` in `run.ts` schneidet alles ausser `core.*` weg —
+  nach Präfix, nicht gegen eine Liste bekannter Signale, damit ein neuer Provider
+  nicht durch Vergessen hineinrutscht. Die Bedingung greift weiterhin, nur
+  später: Anreicherung füllt, Rubrik bewertet.
+- **Overpass meldet Laufzeitfehler mit HTTP 200.** Ein Zeitlimit kommt als
+  Status 200, leerer Elementliste und dem Grund im Feld `remark`
+  (`runtime error: Query timed out ... after 36 seconds`). Wer nur den Status
+  prüft, liest das als "in Österreich gibt es keine Restaurants" — eine
+  erfolgreiche Antwort auf eine Abfrage, die nie lief. Der Adapter wirft jetzt,
+  aber nur bei leerer Liste: `remark` trägt gelegentlich auch Hinweise zu einer
+  geglückten Abfrage.
+- **Ein Bias-Kreis über 50 km verfälscht die Frage.** Google kappt den Radius
+  dort. Aus "Restaurants in Österreich" (Halbdiagonale 322 km) wurde ein
+  50-km-Kreis um 47.7/13.3 — Salzburger Bergland, überwiegend Alpen, genau ein
+  Treffer. Zu große Gebiete bekommen jetzt gar keinen Bias: `locationBias`
+  gewichtet nur, das Weglassen heißt "such breit" und nicht "such woanders",
+  und `core.geo` schneidet als Nachfilter exakt zu.
+- **Eine Branche, die OSM nicht kennt, ist kein Grund zur offenen Suche.**
+  `toCategoryTags` liefert für `it_services` oder `erp` nichts, der Schlüssel
+  landet in `unsupported`, und die Query fiel auf alle Geschäfte des Bundeslandes
+  zurück — um danach jedes Objekt zu verwerfen. Teuerste denkbare Abfrage,
+  garantiert leeres Ergebnis, und die Quelle der 504er. Der Adapter sagt jetzt,
+  dass er die falsche Quelle ist, statt eine andere Frage zu beantworten.
+- **`supports` ist eine Absichtserklärung, kein Beleg.** Die Registry teilt
+  Filter anhand der statischen Liste in "pushed down" und "nachgelagert" — ob
+  die Quelle den Filter im konkreten Lauf *wirklich* angewandt hat, steht dort
+  nicht. Places nennt `core.geo` als unterstützt, lässt den Ortsbezug bei einem
+  Gebiet über 50 km Bias-Radius aber weg; damit filterte niemand, und eine
+  Österreich-Suche lieferte Treffer aus Neubrandenburg und Pafos. Der
+  Nachfilter läuft deshalb **immer**. Fehlende Felder gelten dabei nicht als
+  Absage: keine Koordinate, aber ein Ländercode entscheidet über das Land, und
+  ohne beides bleibt der Treffer drin — unbelegt ist nicht widerlegt.
+- **Ein Nachfilter, der alles verwirft, sieht aus wie eine leere Gegend.** Der
+  Adapter liefert 500 Objekte, `evaluateFilter` verwirft jedes, und der Lauf
+  meldet `found: 0` ohne Fehler — ununterscheidbar von "dort gibt es nichts".
+  Genau das passierte, weil `core.category` mehrwertig ist (ein Lokal ist
+  restaurant *und* cafe), der Nutzerfilter aber einwertig, und `looseEquals`
+  den Array-Fall nicht kannte. `evaluateFilter` hatte trotz dieser Stellung
+  keinen einzigen Test. Der Lauf berichtet jetzt `returned` neben `found` — die
+  Differenz benennt sofort, ob die Quelle oder der Filter schuld ist.
+- **Auf dem Server läuft `./infra/alg.sh`, nicht `docker compose`.** ALG braucht
+  zwei Compose-Dateien; die zweite hängt die Container ins Supabase-Netz. Fehlt
+  sie, ist der Fehler nicht "Netzwerk fehlt", sondern `getaddrinfo EAI_AGAIN`
+  und HTTP 500 auf jeder Route mit Datenbankzugriff, während `/health` und
+  `/docs` weiterlaufen — es sieht nach einem Anwendungsfehler aus und ist
+  keiner. `export COMPOSE_FILE=...` überlebt keinen Reconnect, das Skript schon.
+- **Jeder neue Auth-Header gehört in `REDACT_PATHS`.** `x-alg-service-token`
+  stand im Klartext in jeder Zeile des Request-Logs, weil die Liste nur
+  `x-supabase-token` kannte — und pino-http loggt Header vollständig. Ein Log
+  wandert weiter als der Prozess, der es schreibt (aufgefallen ist es, als ein
+  Fehlerlog zum Debuggen weitergereicht wurde).
 - **Never create RLS policies.** Supabase is used as a plain Postgres. There is no
   anon key in circulation and the frontend never talks to the database. All
   authorization happens in the API layer. An RLS policy here would give false
   confidence and conflict with the service-role connection.
+- **`ALG_SERVICE_TOKEN` is a tenant boundary, not a convenience.** The Nexoro PHP
+  backend authenticates its own users and calls ALG server-to-server with this
+  secret, naming the acting user and tenant. Whoever holds it can act for any
+  workspace, which is sound only because it lives on a server we operate. It must
+  never reach a browser, and the hostname alone never grants anything — the
+  subdomain only _names_ a workspace, presenting the secret is what authorises
+  using it. Unset disables the whole path; there is deliberately no weaker
+  fallback. See `infra/FRONTEND.md`.
+- **A hostname is attacker-controlled input.** Anyone can send any `Host` header.
+  `tenantSlugFromHost()` in `@alg/shared` is strict on purpose: one label only
+  (so `nexoro.evil.nexoro.net` is not the `nexoro` tenant), a reserved-name list
+  (so `admin.nexoro.net` never becomes a workspace), and the first value only
+  when a proxy appends several. Auto-provisioning a workspace per subdomain is
+  only safe behind those checks — loosen one and an unknown host starts writing
+  rows.
+- **CORS defaults to closed, and `*` is ignored rather than honoured.** This API
+  serves lead data under GDPR; a wildcard on an authenticated origin is worth
+  more to an attacker than to us. Browsers also refuse `*` together with
+  credentials, so it would not even work.
 - **`withWorkspace()` is mandatory.** Every Drizzle query goes through it — it is
   the _only_ thing enforcing tenant isolation. The `alg/no-raw-drizzle-query`
   ESLint rule fails the build on a raw `db.select()`. Genuinely global queries use
@@ -125,10 +257,29 @@ Things that will bite, roughly in order of how expensive the mistake is:
   never a path. Traefik does not serve the storage directory.
 - **Backups cover the database _and_ the storage directory.** A `pg_dump` alone
   leaves a catalogue of documents that no longer exist.
+- **Eine Migration ohne Journal-Eintrag läuft nie.** Drizzle führt aus, was in
+  `migrations/meta/_journal.json` steht, nicht was im Ordner liegt. Eine von
+  Hand geschriebene `.sql` ohne Eintrag wird beim Deploy stillschweigend
+  übersprungen und fällt erst als HTTP 500 auf, wenn der neue Code eine Spalte
+  liest, die es auf dem Server nicht gibt. `migrations.test.ts` prüft beide
+  Richtungen.
 - **Migrations are forward-compatible.** Never drop a column in the same deploy as
   the code that stops using it.
 - **User-visible strings are German, via i18n keys.** Code, identifiers and comments
   are English. Never hardcode German text in a handler.
+- **A new route is not finished until `openapi.ts` describes it.** Two things are
+  generated from that document and nothing else: the frontend's client, in the
+  other repository, and the reference page at `GET /docs`. A missing entry means
+  the endpoint is invisible to whoever builds the UI; a stale entry means a
+  generated client method that 404s at runtime. `openapi-coverage.test.ts` fails
+  the build in either direction, so this is enforced rather than remembered —
+  but write the entry in the same commit as the route, not afterwards.
+
+  The `/docs` page itself needs no maintenance: it renders whatever the document
+  says. What does need care is the **grouping** in `apps/api/src/docs.ts` — a
+  route matching no section lands in "Weitere", which is the page telling you it
+  does not know where the endpoint belongs. Give it a section rather than leaving
+  it there.
 
 ## Conventions
 

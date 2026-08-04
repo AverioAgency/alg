@@ -83,6 +83,24 @@ die()  { printf '\n\033[31mFEHLGESCHLAGEN: %s\033[0m\n' "$1" >&2; exit 1; }
 note() { printf '\033[33m%s\033[0m\n' "$1"; }
 ok()   { printf '\033[32m%s\033[0m\n' "$1"; }
 
+# Prueft, dass die Antwort das erwartete Feld traegt - nicht bloss, dass sie JSON
+# ist. Eine problem+json-Antwort auf einen unbekannten Pfad ist ebenfalls
+# gueltiges JSON, und die nachfolgenden jq-Ausdruecke laufen dann auf null,
+# wodurch der eigentliche Grund (alter Container, fehlende Migration) im
+# Fehlerrauschen untergeht.
+expect_field() {
+  local payload="$1" field="$2" what="$3"
+  if echo "$payload" | jq -e "$field" >/dev/null 2>&1; then return 0; fi
+
+  printf '\n\033[31m%s: unerwartete Antwort.\033[0m\n' "$what" >&2
+  if echo "$payload" | jq -e '.type' >/dev/null 2>&1; then
+    printf 'Fehler: %s\n' "$(echo "$payload" | jq -c '{type, title, status, detail}')" >&2
+  else
+    printf 'Antwort: %s\n' "${payload:0:200}" >&2
+  fi
+  exit 1
+}
+
 command -v jq >/dev/null || die "jq fehlt (apt install jq)"
 
 printf '\033[1mModus:\033[0m %s\n' "$MODE"
@@ -97,7 +115,32 @@ echo "$HEALTH" | jq -c '{status, version, sendingEnabled}'
 # --- 1. Was kann der Filter? --------------------------------------------------
 hr "1. Filter-Schema (M4)"
 SCHEMA=$(call GET '/v1/filters/schema?target_type=company')
-echo "$SCHEMA" | jq -e . >/dev/null 2>&1 || die "filters/schema antwortet nicht"
+
+# Nicht nur "ist es JSON": eine problem+json-Antwort auf einen unbekannten Pfad
+# ist ebenfalls gueltiges JSON, und .fields[] laeuft dann auf null. Der haeufige
+# Fall dahinter ist ein Container, der noch das alte Image faehrt.
+if ! echo "$SCHEMA" | jq -e '.fields' >/dev/null 2>&1; then
+  printf '\033[31mGET /v1/filters/schema liefert kein Schema.\033[0m\n' >&2
+  echo >&2
+  if echo "$SCHEMA" | jq -e '.type' >/dev/null 2>&1; then
+    printf 'Antwort: %s\n' "$(echo "$SCHEMA" | jq -c '{type, title, status}')" >&2
+  else
+    printf 'Antwort: %s\n' "${SCHEMA:0:200}" >&2
+  fi
+  cat >&2 <<'HINT'
+
+Dieser Endpunkt kam mit M4. Laeuft der Container noch auf einem aelteren Stand?
+
+  git log --oneline -1              # welcher Commit ist ausgecheckt?
+  docker compose build api worker   # Image neu bauen
+  docker compose up -d api worker
+  pnpm migrate                      # Migration 0003 fuer die Bewertung
+
+pnpm fehlt auf diesem Server?
+  npm i -g pnpm@10.15.0
+HINT
+  exit 1
+fi
 
 CORE=$(echo "$SCHEMA" | jq '[.fields[] | select(.kind=="core")] | length')
 SIGNALS=$(echo "$SCHEMA" | jq '[.fields[] | select(.kind=="signal")] | length')
@@ -116,7 +159,7 @@ CLARIFY=$(call POST /v1/searches/clarify -d '{
   "description": "Handwerksbetriebe in Oberoesterreich ohne moderne Website",
   "target_type": "company"
 }')
-echo "$CLARIFY" | jq -e . >/dev/null 2>&1 || die "clarify antwortet nicht"
+expect_field "$CLARIFY" ".questions" "POST /v1/searches/clarify"
 
 QCOUNT=$(echo "$CLARIFY" | jq '.questions | length')
 echo "  ${QCOUNT} Frage(n), runnable=$(echo "$CLARIFY" | jq -r .runnable)"
@@ -137,6 +180,7 @@ FREE=$(call POST /v1/searches/preview -d '{
     { "question_id": "category", "value": ["craft_business"] }
   ]
 }')
+expect_field "$FREE" ".plan" "POST /v1/searches/preview"
 FREE_EMPTY=$(echo "$FREE" | jq -r '.plan.empty')
 FREE_COST=$(echo "$FREE" | jq -r '.cost.total_eur')
 echo "  ohne Signalbezug: plan.empty=${FREE_EMPTY}, Kosten=${FREE_COST} EUR"
@@ -158,6 +202,7 @@ echo "  mit Signalbezug: $(echo "$PAID" | jq -r '[.plan.providers[].provider_id]
 ok "  ein referenziertes Signal plant seinen Provider"
 
 # 3c. Der Link, den man weiterschicken kann.
+expect_field "$PAID" ".share_query" "POST /v1/searches/preview"
 SHARE=$(echo "$PAID" | jq -r '.share_query')
 echo "  Teilbare URL: ?${SHARE:0:90}..."
 DECODED=$(call POST /v1/searches/decode -d "{\"query\": \"${SHARE}\"}")
@@ -166,7 +211,9 @@ ok "  Link laesst sich wieder einlesen"
 
 # --- 4. Playbook starten ------------------------------------------------------
 hr "4. Playbook starten (M4)"
-call GET /v1/playbooks | jq -r '.data[] | "  " + .slug + "  (" + .target_type + ", " + ((.referenced_signals|length)|tostring) + " Signale)"'
+PLAYBOOKS_JSON=$(call GET /v1/playbooks)
+expect_field "$PLAYBOOKS_JSON" ".data" "GET /v1/playbooks"
+echo "$PLAYBOOKS_JSON" | jq -r '.data[] | "  " + .slug + "  (" + .target_type + ", " + ((.referenced_signals|length)|tostring) + " Signale)"'
 
 START=$(call POST "/v1/playbooks/${PLAYBOOK}/start" -d "{\"name\": \"E2E ${PLAYBOOK}\"}")
 SEARCH_ID=$(echo "$START" | jq -r '.search_id // empty')
@@ -261,6 +308,7 @@ hr "8. Ergebnis: die Lead-Liste"
 LEADS=$(call GET "/v1/rubrics/${RUBRIC_ID}/leads?limit=10")
 echo "$LEADS" | jq -r '.data[] | "  " + (.total|tostring|(" "*(3-length))+.) + "  " + (if .qualified then "JA " else "nein" end) + "  " + .company.name'
 
+expect_field "$LEADS" ".data" "GET /v1/rubrics/:id/leads"
 LEAD_COUNT=$(echo "$LEADS" | jq '.data | length')
 [ "$LEAD_COUNT" -gt 0 ] || die "Keine bewerteten Leads"
 

@@ -3,6 +3,7 @@ import { desc, eq, sql, type SQL } from "drizzle-orm"
 import { z } from "zod"
 import { type Queue } from "bullmq"
 import { searchRuns, searches, withWorkspace, type Database } from "@alg/db"
+import { findUnknownFilterKeys, type SignalRegistry } from "@alg/core"
 import { AppError, PROBLEM_TYPES, SearchSpecSchema, decodeCursor, encodeCursor } from "@alg/shared"
 import { requireContext } from "../middleware/auth.js"
 
@@ -44,10 +45,38 @@ const ListQuerySchema = z.object({
 export interface SearchesRouterOptions {
   db: Database
   discoveryQueue: Queue
+  /** Fuer die Schluesselpruefung: nur sie kennt die tatsaechlichen Signalnamen. */
+  signalRegistry: SignalRegistry
 }
 
 export function createSearchesRouter(options: SearchesRouterOptions): Router {
   const router = Router()
+
+  /**
+   * Weist eine Suche mit erfundenen Filterschluesseln ab.
+   *
+   * Ohne diese Pruefung ist ein Tippfehler oder ein geratener Name folgenlos -
+   * bis zum Lauf: kein Adapter bedient den Schluessel, der Nachfilter findet
+   * keinen Wert und verwirft jeden Treffer. Der Nutzer sieht "0 Leads" und
+   * nichts sonst. Hier ist der letzte Moment, in dem jemand zusieht.
+   */
+  const assertKnownFilterKeys = (spec: { filters: Parameters<typeof findUnknownFilterKeys>[0] }) => {
+    const unknown = findUnknownFilterKeys(spec.filters, options.signalRegistry)
+    if (unknown.length === 0) return
+
+    throw new AppError(PROBLEM_TYPES.VALIDATION_FAILED, {
+      detail:
+        `Unbekannte Filterschlüssel: ${unknown.map((entry) => entry.key).join(", ")}. ` +
+        "GET /v1/filters/schema listet alle verfügbaren Felder.",
+      errors: unknown.map((entry) => ({
+        path: `spec.filters.${entry.key}`,
+        message:
+          entry.didYouMean.length > 0
+            ? `Unbekannt. Meintest du ${entry.didYouMean.join(", ")}?`
+            : "Unbekannt - siehe GET /v1/filters/schema.",
+      })),
+    })
+  }
 
   router.post("/searches", async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -59,6 +88,8 @@ export function createSearchesRouter(options: SearchesRouterOptions): Router {
           detail: "monitor_cron is required when is_monitor is true.",
         })
       }
+
+      assertKnownFilterKeys(body.spec)
 
       const [created] = await withWorkspace(
         ctx,
@@ -146,6 +177,10 @@ export function createSearchesRouter(options: SearchesRouterOptions): Router {
       const { id } = IdParamSchema.parse(req.params)
       const body = UpdateSearchSchema.parse(req.body)
       await loadSearch(options.db, ctx, id)
+
+      // Auch beim Aendern: sonst waere die Pruefung beim Anlegen nur eine Huerde,
+      // die ein zweiter Aufruf umgeht.
+      if (body.spec !== undefined) assertKnownFilterKeys(body.spec)
 
       const [updated] = await withWorkspace(
         ctx,

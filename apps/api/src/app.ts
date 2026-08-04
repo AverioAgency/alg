@@ -10,6 +10,8 @@ import { type Logger } from "./logger.js"
 import { createAuthMiddleware } from "./middleware/auth.js"
 import { createErrorHandler, notFoundHandler } from "./middleware/error.js"
 import { createIdempotencyMiddleware } from "./middleware/idempotency.js"
+import { createCorsMiddleware } from "./middleware/cors.js"
+import { createServiceAuthMiddleware } from "./middleware/service-auth.js"
 import { createRateLimiters, ipRateLimit, workspaceRateLimit } from "./middleware/rate-limit.js"
 import { requestId } from "./middleware/request-id.js"
 import { createFilesRouter } from "./routes/files.js"
@@ -23,6 +25,7 @@ import { createClarifyRouter } from "./routes/clarify.js"
 import { createLlmClientFromEnv } from "@alg/core"
 import { buildSignalRegistry } from "@alg/adapters-signals"
 import { openApiDocument } from "./openapi.js"
+import { renderDocsPage } from "./docs.js"
 
 export interface AppOptions {
   env: Env
@@ -46,9 +49,18 @@ export function createApp(options: AppOptions): Express {
   app.use(
     helmet({
       contentSecurityPolicy: false, // API returns JSON; per-response CSP is set on file streams.
-      crossOriginResourcePolicy: { policy: "same-site" },
+      // cross-origin, not same-site: the Nexoro frontend is a different site, and
+      // same-site would have the browser discard responses CORS just allowed.
+      // CORP guards embedding (an <img> or <script> pulling a response); which
+      // origins may *read* it is decided by the allowlist below.
+      crossOriginResourcePolicy: { policy: "cross-origin" },
     })
   )
+
+  // Before the rate limiters: a preflight carries no credentials and must not
+  // consume a client's budget, and a 429 on OPTIONS surfaces in the browser as
+  // an opaque CORS failure rather than as rate limiting.
+  app.use(createCorsMiddleware({ origins: env.ALG_CORS_ORIGINS }))
   app.use(
     pinoHttp({
       logger,
@@ -83,6 +95,33 @@ export function createApp(options: AppOptions): Express {
     res.json(openApiDocument(version))
   })
 
+  /**
+   * The human-readable API reference, generated from the same document.
+   *
+   * Public and mounted before the auth middleware: whoever is wiring up the
+   * frontend needs to read it before they have a token, and it exposes nothing a
+   * caller could not read from /v1/openapi.json anyway.
+   *
+   * Helmet's default CSP is disabled for JSON responses, so this route sets its
+   * own - the page is self-contained, and `default-src 'none'` plus inline
+   * styles is exactly what it needs.
+   */
+  app.get("/docs", (_req, res) => {
+    res
+      .type("html")
+      .setHeader(
+        "content-security-policy",
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+      )
+    // Not cached: a redeploy changes the routes, and a stale reference is worse
+    // than a slow one.
+    res.setHeader("cache-control", "no-cache")
+    res.send(renderDocsPage(openApiDocument(version), version))
+  })
+
+  // /docs without the /v1 prefix is the memorable form; both work.
+  app.get("/v1/docs", (_req, res) => res.redirect(302, "/docs"))
+
   // Signed report links are public by design and must not require a workspace header,
   // so this router is mounted before the auth middleware. Access is proven by the
   // HMAC signature instead.
@@ -105,7 +144,36 @@ export function createApp(options: AppOptions): Express {
     issuer: `${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1`,
   })
 
-  app.use("/v1", authenticate)
+  /**
+   * Two ways in, tried in order.
+   *
+   * The Nexoro PHP backend presents a service token and names the acting user;
+   * everyone else presents a Supabase JWT. Service auth runs first and only
+   * engages when its header is present, so a request without it reaches the
+   * Supabase path exactly as before.
+   */
+  app.use(
+    "/v1",
+    createServiceAuthMiddleware({
+      db,
+      serviceToken: env.ALG_SERVICE_TOKEN,
+      tenantDomain: env.ALG_TENANT_DOMAIN,
+      // Requested explicitly: an unseen subdomain becomes a workspace on first
+      // contact. The reserved-slug list and strict hostname parsing in
+      // @alg/shared are what keep that from being abusable.
+      autoProvision: true,
+    })
+  )
+
+  // Skipped when service auth already established a context - re-verifying would
+  // demand a Supabase token the PHP backend does not have.
+  app.use("/v1", (req, res, next) => {
+    if (req.ctx) {
+      next()
+      return
+    }
+    void authenticate(req, res, next)
+  })
   app.use("/v1", workspaceRateLimit(limiters))
   app.use("/v1", createIdempotencyMiddleware({ db }))
   app.use("/v1", filesRouter)
@@ -113,13 +181,16 @@ export function createApp(options: AppOptions): Express {
   // The API only enqueues discovery work; the worker consumes it.
   const discoveryQueue = new Queue("discovery", { connection: redis })
 
-  app.use("/v1", createCompaniesRouter({ db }))
-  app.use("/v1", createSearchesRouter({ db, discoveryQueue }))
-  app.use("/v1", createStreamsRouter({ db }))
-
   // One registry for the process: the crawler inside it holds the per-host rate
   // limit, which only works if every request goes through the same instance.
+  // Vor den Routen erzeugt, weil /searches sie fuer die Schluesselpruefung
+  // braucht - sie allein kennt die tatsaechlichen Signalnamen.
   const signalRegistry = buildSignalRegistry({ userAgent: env.ALG_USER_AGENT })
+
+  app.use("/v1", createCompaniesRouter({ db }))
+  app.use("/v1", createSearchesRouter({ db, discoveryQueue, signalRegistry }))
+  app.use("/v1", createStreamsRouter({ db }))
+
   const enrichmentQueue = new Queue("enrichment", { connection: redis })
   app.use("/v1", createSignalsRouter({ db, registry: signalRegistry, enrichmentQueue }))
 
@@ -131,7 +202,7 @@ export function createApp(options: AppOptions): Express {
 
   // Stateless: the client sends the description and answers, the server computes
   // the questions. No draft table and no half-finished wizards left behind.
-  app.use("/v1", createClarifyRouter({ db, registry: signalRegistry }))
+  app.use("/v1", createClarifyRouter({ db, registry: signalRegistry, llmClient }))
 
   app.use(notFoundHandler)
   app.use(createErrorHandler(logger))

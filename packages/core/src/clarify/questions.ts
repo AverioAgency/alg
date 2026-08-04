@@ -1,6 +1,7 @@
 import {
   MATCH_ALL,
   categoriesFor,
+  type OnboardingProfile,
   type FilterNode,
   type SearchSpec,
   type TargetType,
@@ -92,6 +93,9 @@ export function nextQuestions(state: ClarifyState): ClarifyQuestion[] {
         { value: "salzburg", labelKey: "clarify.region.salzburg" },
         { value: "steiermark", labelKey: "clarify.region.steiermark" },
         { value: "tirol", labelKey: "clarify.region.tirol" },
+        { value: "vorarlberg", labelKey: "clarify.region.vorarlberg" },
+        { value: "kaernten", labelKey: "clarify.region.kaernten" },
+        { value: "burgenland", labelKey: "clarify.region.burgenland" },
         { value: "wien", labelKey: "clarify.region.wien" },
         { value: "austria", labelKey: "clarify.region.austria" },
       ],
@@ -247,7 +251,18 @@ const REGION_BBOX: Record<string, [number, number, number, number]> = {
   salzburg: [46.94, 12.07, 48.08, 13.99],
   steiermark: [46.62, 13.56, 47.84, 16.18],
   tirol: [46.65, 10.1, 47.75, 12.98],
+  vorarlberg: [46.84, 9.53, 47.6, 10.24],
+  kaernten: [46.37, 12.66, 47.16, 15.07],
+  burgenland: [46.84, 16.09, 48.13, 17.16],
   wien: [48.11, 16.18, 48.33, 16.58],
+  /**
+   * Ganz Oesterreich ist eine legitime Wahl, aber eine teure.
+   *
+   * Gemessen: eine Kategorie-Abfrage ueber diese Flaeche (20.2 Quadratgrad)
+   * braucht auf Overpass rund 47s und scheitert unter Last; dasselbe fuer Wien
+   * (0.09) kommt in 4s zurueck. Wer das Land waehlt, soll es bekommen - aber
+   * die Rueckfrage nennt zuerst die Bundeslaender.
+   */
   austria: [46.37, 9.53, 49.02, 17.16],
 }
 
@@ -286,15 +301,94 @@ function collectKeys(node: FilterNode): Set<string> {
   return keys
 }
 
+/** Die Regionen, die eine Suche kennt - fuer den Suchtext-Parser. */
+export const KNOWN_REGIONS: string[] = Object.keys(REGION_BBOX)
+
+/**
+ * Uebernimmt, was aus dem Suchtext gelesen wurde.
+ *
+ * Vorher landete die Beschreibung in einem Feld und wurde nie wieder gelesen:
+ * wer "Baufirmen in Linz" eintippte, wurde anschliessend gefragt, in welcher
+ * Region er suchen wolle. Das wirkte, als haette niemand zugehoert.
+ *
+ * Der Ort ist genauer als die Region und kommt zusaetzlich dazu - "Linz"
+ * heisst Oberoesterreich *und* core.city=Linz, sonst waere das halbe
+ * Bundesland im Ergebnis.
+ */
+export function applyInterpretation(
+  state: ClarifyState,
+  interpreted: {
+    region: string | null
+    city: string | null
+    categories: string[]
+    limit: number | null
+  }
+): ClarifyState {
+  let current = state
+
+  if (interpreted.region) {
+    current = applyAnswer(current, { questionId: "region", value: interpreted.region })
+  }
+  if (interpreted.categories.length > 0) {
+    current = applyAnswer(current, { questionId: "category", value: interpreted.categories })
+  }
+  if (interpreted.limit) {
+    current = applyAnswer(current, { questionId: "limit", value: interpreted.limit })
+  }
+  if (interpreted.city) {
+    // Eine Ziffernfolge ist eine PLZ. Als Ortsname gesucht faende sie nichts.
+    const leaf = /^\d{4,5}$/.test(interpreted.city)
+      ? { op: "eq" as const, key: "core.postal_code", value: interpreted.city }
+      : { op: "contains" as const, key: "core.city", value: interpreted.city }
+    current = { ...current, spec: withFilter(current.spec, leaf) }
+  }
+
+  return current
+}
+
 /** A fresh state for a description the user typed. */
 export function startClarification(
   description: string,
-  targetType: TargetType = "company"
+  targetType: TargetType = "company",
+  profile?: OnboardingProfile | null
 ): ClarifyState {
-  return {
-    targetType,
+  const resolvedType = profile?.target?.targetType ?? targetType
+
+  const state: ClarifyState = {
+    targetType: resolvedType,
     description,
     answers: {},
-    spec: { targetType, filters: MATCH_ALL },
+    spec: { targetType: resolvedType, filters: MATCH_ALL },
   }
+
+  return profile ? applyProfile(state, profile) : state
+}
+
+/**
+ * Folds what onboarding learned into a fresh search.
+ *
+ * This is what makes the wizard worth filling in: someone who said
+ * "Oberösterreich, Handwerksbetriebe" gets asked neither again. The answers are
+ * applied exactly as if the user had just given them, so nextQuestions() drops
+ * them on its own - there is no second code path deciding what to skip.
+ *
+ * Only region and categories carry over. The website question and the limit are
+ * per-search decisions: wanting leads without a website today says nothing about
+ * tomorrow, and a stored limit would silently cap searches the user did not
+ * mean to cap.
+ */
+export function applyProfile(state: ClarifyState, profile: OnboardingProfile): ClarifyState {
+  let current = state
+
+  const region = profile.target?.region
+  if (region) {
+    current = applyAnswer(current, { questionId: "region", value: region })
+  }
+
+  const categories = profile.target?.categories
+  if (categories && categories.length > 0) {
+    current = applyAnswer(current, { questionId: "category", value: categories })
+  }
+
+  return current
 }

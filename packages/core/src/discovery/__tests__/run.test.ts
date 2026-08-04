@@ -122,6 +122,85 @@ describe("runDiscovery", () => {
     expect(inserted).toStrictEqual(["Firma A", "Firma B"])
   })
 
+  it("drops a hit outside the searched area, even from an adapter that claims geo support", async () => {
+    /**
+     * Genau der Fall aus der Produktion: Places nennt core.geo als
+     * unterstuetzt, laesst den Ortsbezug bei einem zu grossen Gebiet aber weg
+     * (Bias-Radius max. 50 km). Die Registry hielt den Filter fuer erledigt,
+     * niemand prueft nach - und in einer Oesterreich-Suche standen Treffer aus
+     * Pafos und Neubrandenburg.
+     */
+    const registry = new DiscoveryRegistry().register(
+      new StubAdapter(
+        "places",
+        [
+          entity("Linzer Baufirma", { geo: { lat: 48.3, lon: 14.28 } }),
+          entity("Grill in Pafos", { geo: { lat: 34.77, lon: 32.42 } }),
+        ],
+        // Behauptet, geografisch filtern zu koennen.
+        ["core.geo"]
+      )
+    )
+    const { db, inserted } = stubDb()
+
+    const result = await runDiscovery({
+      spec: geoSpec,
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+      runId: "22222222-2222-2222-2222-222222222222",
+      registry,
+      db,
+    })
+
+    expect(result.found).toBe(1)
+    expect(inserted).toStrictEqual(["Linzer Baufirma"])
+  })
+
+  it("keeps a hit whose coordinates the source did not supply", async () => {
+    // Places fuehrt `location` als optional. Eine Linzer Firma ohne Koordinate
+    // ist nicht widerlegt, nur unbelegt - sie zu verwerfen hiesse,
+    // unvollstaendige Daten wie eine Absage zu behandeln.
+    const registry = new DiscoveryRegistry().register(
+      new StubAdapter("places", [entity("Firma ohne Koordinate")], ["core.geo"])
+    )
+    const { db } = stubDb()
+
+    const result = await runDiscovery({
+      spec: geoSpec,
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+      runId: "22222222-2222-2222-2222-222222222222",
+      registry,
+      db,
+    })
+
+    expect(result.found).toBe(1)
+  })
+
+  it("uses the country when there is no coordinate", async () => {
+    // Kein Punkt, aber ein Land: das reicht, um Zypern von Oesterreich zu
+    // unterscheiden.
+    const registry = new DiscoveryRegistry().register(
+      new StubAdapter(
+        "places",
+        [
+          entity("Wiener Betrieb", { address: { country: "AT" } }),
+          entity("Zyprischer Betrieb", { address: { country: "CY" } }),
+        ],
+        ["core.geo"]
+      )
+    )
+    const { db, inserted } = stubDb()
+
+    await runDiscovery({
+      spec: geoSpec,
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+      runId: "22222222-2222-2222-2222-222222222222",
+      registry,
+      db,
+    })
+
+    expect(inserted).toStrictEqual(["Wiener Betrieb"])
+  })
+
   it("keeps the results of other adapters when one fails", async () => {
     // A single flaky source must not discard a whole run.
     const registry = new DiscoveryRegistry()

@@ -1,5 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from "express"
-import { and, asc, desc, eq, isNotNull, sql, type SQL } from "drizzle-orm"
+import { and, asc, desc, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm"
 import { z } from "zod"
 import { type Queue } from "bullmq"
 import { companies, leadScores, rubrics, scoringRuns, withWorkspace, type Database } from "@alg/db"
@@ -21,6 +21,7 @@ import {
   type Rubric,
 } from "@alg/shared"
 import { requireContext } from "../middleware/auth.js"
+import { loadOnboardingProfile } from "./onboarding-profile.js"
 
 /**
  * Rubric CRUD, scoring runs and calibration.
@@ -57,6 +58,12 @@ const ListQuerySchema = z.object({
 const SuggestSchema = z.object({
   description: z.string().min(10).max(4000),
   target_type: TargetTypeSchema.default("company"),
+  /**
+   * Wuensche, die keine Quelle filtern kann - aus der Interpretation des
+   * Suchtexts ("unter 50 Mitarbeiter"). Sie werden zu einem LLM-Kriterium,
+   * statt unter den Tisch zu fallen.
+   */
+  additional_criteria: z.array(z.string().min(1).max(300)).max(10).optional(),
 })
 
 const ScoreRequestSchema = z.object({
@@ -74,6 +81,17 @@ const LeadsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().min(1).optional(),
   qualified_only: z.coerce.boolean().default(false),
+  /**
+   * Ausgeblendete sind standardmaessig unsichtbar - das ist der Sinn der
+   * Funktion. Mit `true` liefert die Route sie mit, damit die UI ein
+   * "Ausgeblendete anzeigen" bauen und das Zurueckholen anbieten kann.
+   */
+  include_dismissed: z.coerce.boolean().default(false),
+})
+
+const DismissSchema = z.object({
+  /** false holt den Lead zurueck. Nichts geht verloren, nur der Zeitstempel. */
+  dismissed: z.boolean(),
 })
 
 export interface RubricsRouterOptions {
@@ -116,7 +134,7 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
    */
   router.post("/rubrics/suggest", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      requireContext(req)
+      const ctx = requireContext(req)
       const body = SuggestSchema.parse(req.body ?? {})
 
       if (!options.llmClient) {
@@ -128,10 +146,17 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
       const catalog = options.registry.signalDefs(body.target_type)
 
       try {
+        // Das Onboarding-Profil geht mit: ohne den Kontext entwirft das Modell
+        // eine Rubrik fuer "gute Firmen im Allgemeinen" statt fuer "Firmen, die
+        // zu diesem Angebot passen" - und das ist die eigentliche Frage.
+        const profile = await loadOnboardingProfile(ctx, options.db)
+
         const result = await suggestRubric({
           client: options.llmClient,
           description: body.description,
           catalog,
+          profile,
+          ...(body.additional_criteria ? { additionalCriteria: body.additional_criteria } : {}),
         })
 
         res.json({
@@ -337,8 +362,49 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
       const companyIds =
         body.company_ids ?? (await allCompanyIds(ctx, rubric.targetType, options.db))
 
+      /**
+       * Nichts zu bewerten ist kein Fehler.
+       *
+       * `all: true` auf einem leeren Workspace ist eine voellig gueltige
+       * Anfrage mit leerem Ergebnis - ein 400 machte daraus im Frontend eine
+       * rote Fehlermeldung, obwohl der Nutzer nur eine Suche laufen liess, die
+       * nichts fand. Ein abgeschlossener Lauf ueber null Firmen sagt dasselbe,
+       * ohne wie ein Defekt auszusehen, und der Client braucht keinen Sonderpfad.
+       *
+       * Ein explizit angefragtes, aber leeres `company_ids` bleibt ein Fehler
+       * (oben abgefangen): dann hat der Aufrufer etwas Widerspruechliches
+       * geschickt.
+       */
       if (companyIds.length === 0) {
-        throw new AppError(PROBLEM_TYPES.VALIDATION_FAILED, { detail: "No companies to score." })
+        const [emptyRun] = await withWorkspace(
+          ctx,
+          async ({ tx, values }) =>
+            tx
+              .insert(scoringRuns)
+              .values(
+                values({
+                  rubricId: id,
+                  status: "completed",
+                  companiesTotal: 0,
+                  companiesDone: 0,
+                  startedAt: new Date(),
+                  finishedAt: new Date(),
+                })
+              )
+              .returning(),
+          options.db
+        )
+
+        res.status(202).json({
+          run_id: emptyRun!.id,
+          status: "completed",
+          companies: 0,
+          llm_stage: llmStageStatus(parseDefinition(rubric.definition), options.llmClient),
+          // Gesagt statt verschwiegen: sonst wirkt eine leere Lead-Liste wie ein
+          // Fehler in der Bewertung, obwohl die Suche nichts gefunden hat.
+          note: "Keine Firmen im Workspace - die Suche hat nichts gefunden.",
+        })
+        return
       }
 
       const [run] = await withWorkspace(
@@ -418,6 +484,7 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
 
       const filters: SQL[] = [eq(leadScores.rubricId, id)]
       if (query.qualified_only) filters.push(eq(leadScores.qualified, true))
+      if (!query.include_dismissed) filters.push(isNull(leadScores.dismissedAt))
 
       const keyset = query.cursor ? parseScoreCursor(query.cursor) : null
       if (query.cursor && !keyset) {
@@ -435,13 +502,28 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
           tx
             .select({
               score: leadScores,
+              /**
+               * Genug, um den Lead zu beurteilen, ohne ihn einzeln nachzuladen.
+               *
+               * Die Liste zeigte vorher nur Name, Domain, Ort, Telefon, Mail -
+               * fuer eine Entscheidung ("anrufen oder nicht?") fehlten Adresse
+               * und Kategorie, und jede Detailansicht war ein zweiter Request.
+               */
               company: {
                 id: companies.id,
                 name: companies.name,
                 domain: companies.domain,
+                website: companies.website,
+                street: companies.street,
+                houseNumber: companies.houseNumber,
+                postalCode: companies.postalCode,
                 city: companies.city,
+                region: companies.region,
+                countryCode: companies.countryCode,
                 phone: companies.phone,
                 email: companies.email,
+                lat: companies.lat,
+                lon: companies.lon,
               },
             })
             .from(leadScores)
@@ -518,6 +600,61 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
   )
 
   /**
+   * Nimmt einen Lead aus der Liste, ohne ihn zu loeschen.
+   *
+   * Bewusst kein DELETE: die Firma stammt aus einer bezahlten Suche, und ein
+   * geloeschter Lead kaeme beim naechsten Lauf als neuer Treffer zurueck -
+   * derselbe Betrieb, denselben Weg noch einmal. Ausblenden heisst "gesehen und
+   * erledigt" und bleibt umkehrbar.
+   *
+   * Getrennt vom Feedback, weil es etwas anderes aussagt: wer ausblendet, weil
+   * er die Firma schon kennt, hat nichts ueber die Qualitaet der Bewertung
+   * gesagt. Die Kalibrierung liest nur `feedback`.
+   */
+  router.put(
+    "/rubrics/:id/leads/:companyId/dismiss",
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const ctx = requireContext(req)
+        const { id } = IdParamSchema.parse(req.params)
+        const companyId = z.uuid().parse(req.params.companyId)
+        const body = DismissSchema.parse(req.body ?? {})
+
+        await loadRubric(ctx, id, options.db)
+
+        const [row] = await withWorkspace(
+          ctx,
+          async ({ tx, scope }) =>
+            tx
+              .update(leadScores)
+              .set({
+                dismissedAt: body.dismissed ? new Date() : null,
+                updatedAt: new Date(),
+              })
+              .where(
+                scope(
+                  leadScores,
+                  and(eq(leadScores.rubricId, id), eq(leadScores.companyId, companyId))!
+                )
+              )
+              .returning(),
+          options.db
+        )
+
+        if (!row) {
+          throw new AppError(PROBLEM_TYPES.NOT_FOUND, {
+            detail: "This company has not been scored with this rubric.",
+          })
+        }
+
+        res.json(toLeadScoreResponse(row))
+      } catch (error) {
+        next(error)
+      }
+    }
+  )
+
+  /**
    * Suggests a corrected threshold from hand-labelled leads.
    *
    * Arithmetic rather than an LLM call: separating two labelled sets has a right
@@ -537,6 +674,15 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
             tx
               .select()
               .from(leadScores)
+              /**
+               * Ausgeblendete Leads zaehlen weiter, wenn sie bewertet wurden.
+               *
+               * Ausblenden sagt "erledigt", Feedback sagt "die Rubrik lag
+               * richtig/falsch". Wer einen Lead bewertet und dann aus der
+               * Liste nimmt, hat sein Urteil nicht zurueckgezogen - es hier zu
+               * verwerfen wuerde die Kalibrierung genau um die Faelle
+               * aermer machen, die jemand bereits durchgearbeitet hat.
+               */
               .where(
                 scope(leadScores, and(eq(leadScores.rubricId, id), isNotNull(leadScores.feedback))!)
               )
@@ -721,6 +867,7 @@ function toLeadScoreResponse(row: typeof leadScores.$inferSelect) {
     breakdown: row.breakdown,
     llm: row.llm,
     feedback: row.feedback,
+    dismissed_at: row.dismissedAt?.toISOString() ?? null,
     scored_at: row.scoredAt.toISOString(),
   }
 }
