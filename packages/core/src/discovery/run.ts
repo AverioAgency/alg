@@ -280,7 +280,25 @@ export function discoveryTimeFilters(node: FilterNode | undefined): FilterNode |
     return child === null ? null : { ...node, child }
   }
 
-  return isCoreKey(node.key) ? node : null
+  if (!isCoreKey(node.key)) return null
+
+  /**
+   * `core.category` ist quellenneutral - nachpruefbar ist es nicht.
+   *
+   * Der Filter traegt einen Slug ("craft_business"), die Quellen liefern ihr
+   * eigenes Vokabular: Overpass rohe OSM-Werte ("carpenter", "works"), Places
+   * Google-Typen ("restaurant", "store"). Ein Vergleich Slug gegen Tag trifft
+   * nie - der Adapter lieferte fuenf passende Betriebe, der Nachfilter verwarf
+   * alle fuenf, und der Lauf meldete `returned: 5, found: 0`.
+   *
+   * Die Bedingung ist damit nicht verloren, sondern bereits erfuellt: beide
+   * Adapter uebersetzen den Slug und *suchen* danach. Ein zweites Mal zu
+   * pruefen hiesse, dieselbe Frage in einer Sprache zu stellen, die die Antwort
+   * nicht spricht.
+   */
+  if (node.key === "core.category") return null
+
+  return node
 }
 
 /**
@@ -313,12 +331,26 @@ function keepsEntity(filters: FilterNode, entity: RawEntity): boolean {
 
   if (evaluateFilter(filters, values)) return true
 
-  // Nur der Geo-Fall bekommt eine zweite Chance, und nur wenn die Koordinate
-  // wirklich fehlt - eine vorhandene, aber ausserhalb liegende ist eine Absage.
-  if (entity.geo) return false
+  /**
+   * Zweite Chance nur, wenn das Feld wirklich fehlt.
+   *
+   * Ein vorhandener, aber nicht passender Wert ist eine Absage - Wien ist nicht
+   * Linz. Ein *fehlender* Wert ist keine: Places liefert weder `location` noch
+   * `addressComponents` zuverlaessig, und einen Treffer daran scheitern zu
+   * lassen heisst, unvollstaendige Daten wie eine Widerlegung zu behandeln.
+   *
+   * Deshalb wird die Bedingung ohne die ungemessenen Felder erneut geprueft:
+   * bleibt sie erfuellt, lag es nur an fehlenden Daten.
+   */
+  const measurable = withoutUnknownFields(filters, values)
+  if (measurable && !evaluateFilter(measurable, values)) return false
+
+  // Der Filter scheitert also nur an fehlenden Feldern. Fuer Geo gibt es dann
+  // noch den Laendercode als groben Ersatz; alles andere gilt als unbelegt.
+  if (entity.geo) return true
 
   const bbox = firstGeoBbox(filters)
-  if (!bbox) return false
+  if (!bbox) return true
 
   const country = entity.address?.country
   if (typeof country !== "string" || country.length === 0) {
@@ -335,6 +367,44 @@ function keepsEntity(filters: FilterNode, entity: RawEntity): boolean {
   }
 
   return countriesInBbox(bbox).has(country.toUpperCase())
+}
+
+/**
+ * Der Filterbaum ohne die Bedingungen, die dieser Datensatz nicht beantworten kann.
+ *
+ * So laesst sich unterscheiden: scheitert der Filter an einem *falschen* Wert
+ * (dann bleibt es dabei) oder nur an einem *fehlenden* (dann ist der Treffer
+ * unbelegt, nicht widerlegt). Ohne diese Unterscheidung verwirft ein
+ * Stadtfilter jeden Treffer, dessen Quelle die Stadt nicht mitgeliefert hat -
+ * auch wenn er mitten in der gesuchten Stadt liegt.
+ *
+ * null heisst: nichts blieb uebrig, also gibt es nichts zu widerlegen.
+ */
+function withoutUnknownFields(
+  node: FilterNode,
+  values: Record<string, unknown>
+): FilterNode | null {
+  if (isBranchNode(node)) {
+    const children = node.children
+      .map((child) => withoutUnknownFields(child, values))
+      .filter((child): child is FilterNode => child !== null)
+
+    if (children.length === 0) return null
+    if (children.length === 1) return children[0] ?? null
+    return { ...node, children }
+  }
+
+  if (isNotNode(node)) {
+    const child = withoutUnknownFields(node.child, values)
+    return child === null ? null : { ...node, child }
+  }
+
+  if (!isLeafNode(node)) return null
+  // `exists` fragt genau nach An- oder Abwesenheit - dort ist ein fehlendes
+  // Feld die Antwort, nicht das Fehlen einer Antwort.
+  if (node.op === "exists") return node
+
+  return node.key in values ? node : null
 }
 
 /** Die erste bbox im Baum - Suchen haben in der Praxis genau eine. */

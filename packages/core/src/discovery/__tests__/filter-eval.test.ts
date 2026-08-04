@@ -162,25 +162,42 @@ describe("discoveryTimeFilters", () => {
    * verwarf damit jeden Treffer, den Google gerade berechnet hatte.
    */
   const geo = { op: "within" as const, key: "core.geo", value: { bbox: [48, 14, 49, 15] } }
-  const category = { op: "eq" as const, key: "core.category", value: "restaurant" }
+  const city = { op: "contains" as const, key: "core.city", value: "Linz" }
   const signal = { op: "eq" as const, key: "web.presence.has_website", value: false }
+  const category = { op: "eq" as const, key: "core.category", value: "restaurant" }
 
-  it("behaelt Kernfelder", () => {
-    expect(discoveryTimeFilters(category)).toEqual(category)
+  it("behaelt nachpruefbare Kernfelder", () => {
+    expect(discoveryTimeFilters(city)).toEqual(city)
+    expect(discoveryTimeFilters(geo)).toEqual(geo)
+  })
+
+  it("entfernt core.category, weil Slug und Quellvokabular nicht vergleichbar sind", () => {
+    // Der Filter traegt "restaurant" als Slug, Overpass liefert rohe OSM-Werte
+    // und Places Google-Typen. Der Vergleich traf nie: fuenf passende Betriebe
+    // rein, null raus. Beide Adapter suchen ohnehin bereits danach.
+    expect(discoveryTimeFilters(category)).toBeNull()
   })
 
   it("entfernt einen Signalfilter", () => {
     expect(discoveryTimeFilters(signal)).toBeNull()
   })
 
-  it("laesst von einem gemischten AND nur die Kernfelder uebrig", () => {
-    expect(discoveryTimeFilters({ op: "and", children: [category, signal] })).toEqual(category)
+  it("laesst von einem gemischten AND nur das Pruefbare uebrig", () => {
+    expect(discoveryTimeFilters({ op: "and", children: [city, signal] })).toEqual(city)
   })
 
-  it("behaelt beide Kernfelder eines AND", () => {
-    expect(discoveryTimeFilters({ op: "and", children: [category, geo, signal] })).toEqual({
+  it("behaelt beide pruefbaren Kernfelder eines AND", () => {
+    expect(discoveryTimeFilters({ op: "and", children: [city, geo, signal] })).toEqual({
       op: "and",
-      children: [category, geo],
+      children: [city, geo],
+    })
+  })
+
+  it("laesst von einer Wizard-Spec Geo und Ort uebrig", () => {
+    // Genau die Spec, die returned: 5, found: 0 lieferte.
+    expect(discoveryTimeFilters({ op: "and", children: [geo, category, city] })).toEqual({
+      op: "and",
+      children: [geo, city],
     })
   })
 
@@ -192,9 +209,9 @@ describe("discoveryTimeFilters", () => {
   it("laesst die Negation eines Signals ebenfalls fallen", () => {
     // Nicht pruefbar bleibt nicht pruefbar - "nicht X" ist nicht "trifft zu".
     expect(discoveryTimeFilters({ op: "not", child: signal })).toBeNull()
-    expect(discoveryTimeFilters({ op: "not", child: category })).toEqual({
+    expect(discoveryTimeFilters({ op: "not", child: city })).toEqual({
       op: "not",
-      child: category,
+      child: city,
     })
   })
 
@@ -203,9 +220,10 @@ describe("discoveryTimeFilters", () => {
     const fromGoogle = {
       "core.name": "Gasthaus Krone",
       "core.category": ["restaurant"],
+      "core.city": "Linz",
       "core.geo": { lat: 48.3, lon: 14.28 },
     }
-    const wizardSpec = { op: "and" as const, children: [category, geo, signal] }
+    const wizardSpec = { op: "and" as const, children: [city, geo, signal] }
 
     expect(evaluateFilter(wizardSpec, fromGoogle)).toBe(false)
     const applicable = discoveryTimeFilters(wizardSpec)

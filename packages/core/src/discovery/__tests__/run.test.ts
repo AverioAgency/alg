@@ -155,6 +155,55 @@ describe("runDiscovery", () => {
     expect(inserted).toStrictEqual(["Linzer Baufirma"])
   })
 
+  it("does not re-check the category against the source's own vocabulary", async () => {
+    /**
+     * Der Lauf, der returned: 5, found: 0 meldete.
+     *
+     * Der Filter traegt den neutralen Slug "craft_business", Overpass liefert
+     * den rohen OSM-Wert "carpenter" und Places den Google-Typ "store". Ein
+     * Vergleich Slug gegen Tag trifft nie - und beide Adapter hatten laengst
+     * danach gesucht.
+     */
+    const registry = new DiscoveryRegistry().register(
+      new StubAdapter(
+        "overpass",
+        [
+          entity("Tischlerei Huber", {
+            geo: { lat: 48.3, lon: 14.28 },
+            categories: ["carpenter"],
+          }),
+          entity("Baumeister Gruber", {
+            geo: { lat: 48.31, lon: 14.29 },
+            categories: ["works"],
+          }),
+        ],
+        ["core.geo", "core.category"]
+      )
+    )
+    const { db, inserted } = stubDb()
+
+    const result = await runDiscovery({
+      spec: {
+        targetType: "local_business",
+        filters: {
+          op: "and",
+          children: [
+            { op: "within", key: "core.geo", value: { bbox: [48, 14, 49, 15] } },
+            { op: "in", key: "core.category", value: ["craft_business"] },
+          ],
+        },
+        limit: 100,
+      },
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+      runId: "22222222-2222-2222-2222-222222222222",
+      registry,
+      db,
+    })
+
+    expect(result.found).toBe(2)
+    expect(inserted).toStrictEqual(["Tischlerei Huber", "Baumeister Gruber"])
+  })
+
   it("keeps a hit whose coordinates the source did not supply", async () => {
     // Places fuehrt `location` als optional. Eine Linzer Firma ohne Koordinate
     // ist nicht widerlegt, nur unbelegt - sie zu verwerfen hiesse,
@@ -173,6 +222,45 @@ describe("runDiscovery", () => {
     })
 
     expect(result.found).toBe(1)
+  })
+
+  it("keeps a hit whose city the source did not supply, but drops a wrong one", async () => {
+    // Der Unterschied, auf den es ankommt: "Wien" ist nicht "Linz" und fliegt
+    // raus. Kein Ort geliefert heisst dagegen unbelegt, nicht widerlegt -
+    // Places fuellt addressComponents nicht zuverlaessig.
+    const registry = new DiscoveryRegistry().register(
+      new StubAdapter(
+        "places",
+        [
+          entity("Linzer Betrieb", { geo: { lat: 48.3, lon: 14.28 }, address: { city: "Linz" } }),
+          entity("Wiener Betrieb", { geo: { lat: 48.2, lon: 16.37 }, address: { city: "Wien" } }),
+          entity("Betrieb ohne Ortsangabe", { geo: { lat: 48.3, lon: 14.28 } }),
+        ],
+        ["core.geo"]
+      )
+    )
+    const { db, inserted } = stubDb()
+
+    await runDiscovery({
+      spec: {
+        targetType: "local_business",
+        filters: {
+          op: "and",
+          children: [
+            { op: "within", key: "core.geo", value: { bbox: [48, 14, 49, 15] } },
+            { op: "contains", key: "core.city", value: "Linz" },
+          ],
+        },
+        limit: 100,
+      },
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+      runId: "22222222-2222-2222-2222-222222222222",
+      registry,
+      db,
+    })
+
+    // Wien liegt ausserhalb der bbox UND heisst anders - doppelt widerlegt.
+    expect(inserted).toStrictEqual(["Linzer Betrieb", "Betrieb ohne Ortsangabe"])
   })
 
   it("uses the country when there is no coordinate", async () => {

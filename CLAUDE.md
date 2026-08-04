@@ -188,6 +188,19 @@ Things that will bite, roughly in order of how expensive the mistake is:
   zurück — um danach jedes Objekt zu verwerfen. Teuerste denkbare Abfrage,
   garantiert leeres Ergebnis, und die Quelle der 504er. Der Adapter sagt jetzt,
   dass er die falsche Quelle ist, statt eine andere Frage zu beantworten.
+- **`core.category` ist quellenneutral und deshalb nicht nachprüfbar.** Der
+  Filter trägt einen Slug (`craft_business`), Overpass liefert rohe OSM-Werte
+  (`carpenter`, `works`), Places Google-Typen (`store`). Slug gegen Tag trifft
+  nie: der Adapter lieferte fünf passende Betriebe, der Nachfilter verwarf alle
+  fünf (`returned: 5, found: 0`). Die Bedingung ist nicht verloren, sondern
+  längst erfüllt — beide Adapter übersetzen den Slug und *suchen* danach.
+  `discoveryTimeFilters()` nimmt sie deshalb heraus.
+- **Ein fehlendes Feld ist keine Absage.** "Wien" ist nicht "Linz" und fliegt
+  raus; *kein Ort geliefert* ist dagegen unbelegt, nicht widerlegt — Places
+  füllt `location` und `addressComponents` nicht zuverlässig. `keepsEntity()`
+  prüft die Bedingung darum ein zweites Mal ohne die ungemessenen Felder: hält
+  sie dann, lag es nur an fehlenden Daten. Für `core.geo` gibt es zusätzlich
+  den Ländercode als groben Ersatz.
 - **`supports` ist eine Absichtserklärung, kein Beleg.** Die Registry teilt
   Filter anhand der statischen Liste in "pushed down" und "nachgelagert" — ob
   die Quelle den Filter im konkreten Lauf *wirklich* angewandt hat, steht dort
