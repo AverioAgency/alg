@@ -336,11 +336,20 @@ export class OverpassAdapter implements DiscoveryAdapter {
     const failures: string[] = []
 
     for (const [index, endpoint] of endpoints.entries()) {
-      // Der erste Endpunkt ist der, der erfahrungsgemaess liefert; die Mirrors
-      // bekommen nur so lange, wie ein antwortender Host brauchen wuerde.
-      const timeoutMs = index === 0 ? this.options.timeoutMs : this.options.mirrorTimeoutMs
-
       for (let attempt = 1; attempt <= this.options.maxAttempts; attempt++) {
+        /**
+         * Die volle Zeit bekommt nur der erste Versuch auf dem Hauptendpunkt.
+         *
+         * Ein grosses Gebiet braucht sie wirklich (Oesterreich: 47s gemessen),
+         * aber sie multipliziert sich mit Versuchen und Endpunkten: 2 x 75s
+         * plus zweimal 2 x 15s waeren 3.5 Minuten vor einem Ladebalken. Ein
+         * 504 heisst "gerade ueberlastet" - der zweite Versuch bekommt darum
+         * nur so lange, wie eine Antwort dauern wuerde, wenn es klappt, und
+         * die Mirrors ohnehin (sie haengen gemessen, statt zu antworten).
+         */
+        const timeoutMs =
+          index === 0 && attempt === 1 ? this.options.timeoutMs : this.options.mirrorTimeoutMs
+
         let status: number
         let responseBody: string
 

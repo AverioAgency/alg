@@ -337,6 +337,23 @@ describe("OverpassAdapter resilience", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
+  it("keeps the worst case bounded, because a user is waiting", async () => {
+    // Die volle Zeit bekommt nur der erste Versuch. Sonst multipliziert sie
+    // sich mit Versuchen und Endpunkten (2x75s + 2x2x15s = 3.5 Minuten).
+    const fetchImpl = sequencedFetch([{ status: 504, body: "busy" }])
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).rejects.toThrow()
+
+    const timeouts = fetchImpl.mock.calls.map(
+      (call) => (call[1] as { timeoutMs: number }).timeoutMs
+    )
+    const total = timeouts.reduce((sum, value) => sum + value, 0)
+    expect(total).toBeLessThanOrEqual(150_000)
+    // Der erste Versuch bekommt trotzdem die volle Zeit - ein ganzes Land
+    // braucht sie (Oesterreich: 47s gemessen).
+    expect(timeouts[0]).toBeGreaterThanOrEqual(75_000)
+    expect(timeouts[1]).toBeLessThan(timeouts[0] ?? 0)
+  })
+
   it("gives a mirror less time than the primary endpoint", async () => {
     // Gemessen haengen beide Mirrors ohne ein einziges Byte, bis jemand
     // abbricht. Mit demselben Zeitlimit wie der Hauptendpunkt wartet der
