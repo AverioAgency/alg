@@ -165,7 +165,21 @@ export class PlacesAdapter implements DiscoveryAdapter {
       regionCode: this.regionCode,
       maxResultCount: Math.min(limit, this.pricing.pageSize),
     }
-    if (plan.locationBias) body.locationRestriction = plan.locationBias
+    /**
+     * Ein Kreis gehoert zu locationBias, nicht zu locationRestriction.
+     *
+     * Die Text-Search-API ist da streng: locationRestriction akzeptiert
+     * ausschliesslich ein Rechteck ("rectangular Viewport"), waehrend
+     * locationBias beides nimmt. Wir bauen aus der bbox einen Kreis (toLocationBias)
+     * und haben ihn als locationRestriction geschickt - Google antwortete
+     * folgerichtig mit HTTP 400, und zwar bei jeder Suche mit Geo-Filter.
+     *
+     * Der Unterschied ist nicht nur formal: restriction schliesst alles
+     * ausserhalb aus, bias gewichtet nur. Fuer eine Lead-Suche ist bias das
+     * richtige Verhalten - ein Betrieb knapp ausserhalb der gerundeten bbox ist
+     * immer noch ein Treffer.
+     */
+    if (plan.locationBias) body.locationBias = plan.locationBias
     if (cursor) body.pageToken = cursor
 
     const response = await this.fetchImpl(this.endpoint, {
@@ -181,8 +195,18 @@ export class PlacesAdapter implements DiscoveryAdapter {
     })
 
     if (response.status !== 200) {
-      // Never echo the body: it can contain the API key in an error envelope.
-      throw new Error(`Google Places responded with ${response.status}`)
+      /**
+       * Googles Begruendung mitgeben, aber nur die Begruendung.
+       *
+       * Der rohe Body darf nicht ins Log: Google spiegelt bei manchen Fehlern
+       * die Anfrage zurueck, und darin steckt der API-Schluessel. Die Felder
+       * `error.message` und `error.status` enthalten ihn nie - und ohne sie
+       * stand hier nur "responded with 400", was einen Konfigurationsfehler von
+       * einem falsch gebauten Request ununterscheidbar macht.
+       */
+      throw new Error(
+        `Google Places responded with ${response.status}${describePlacesError(response.body)}`
+      )
     }
 
     let parsed: unknown
@@ -281,6 +305,35 @@ function keysOf(node: FilterNode): string[] {
   if (isBranchNode(node)) return node.children.flatMap(keysOf)
   if (isNotNode(node)) return keysOf(node.child)
   return isLeafNode(node) ? [node.key] : []
+}
+
+/**
+ * Liest Googles Fehlergrund aus dem Antwort-Body - aber nur `error.status`.
+ *
+ * `error.message` waere aussagekraeftiger und ist trotzdem tabu: Google
+ * schreibt den API-Schluessel hinein ("API key not valid: AIza..."), was ein
+ * bestehender Test hier festhaelt. `status` ist dagegen ein festes Enum
+ * (INVALID_ARGUMENT, PERMISSION_DENIED, RESOURCE_EXHAUSTED, ...) und kann
+ * konstruktionsbedingt kein Geheimnis tragen.
+ *
+ * Das genuegt fuer die Diagnose: INVALID_ARGUMENT heisst "wir bauen den Request
+ * falsch", PERMISSION_DENIED "der Schluessel stimmt nicht oder die API ist nicht
+ * freigeschaltet". Vorher stand nur "responded with 400" - und die beiden Faelle
+ * waren nicht unterscheidbar.
+ */
+function describePlacesError(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (typeof parsed !== "object" || parsed === null) return ""
+    const error = Reflect.get(parsed, "error")
+    if (typeof error !== "object" || error === null) return ""
+
+    const status = Reflect.get(error, "status")
+    // Nur der Enum-Wert, und auch der nur, wenn er wie einer aussieht.
+    return typeof status === "string" && /^[A-Z_]{3,40}$/.test(status) ? ` (${status})` : ""
+  } catch {
+    return ""
+  }
 }
 
 function toLocationBias(value: unknown): PlacesQueryPlan["locationBias"] {

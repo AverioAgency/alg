@@ -130,7 +130,10 @@ describe("PlacesAdapter", () => {
     const init = fetchImpl.mock.calls[0]?.[1] as { body: string }
     const body: unknown = JSON.parse(init.body)
     expect((body as { textQuery: string }).textQuery).toBe("Restaurant Linz")
-    expect((body as { locationRestriction?: unknown }).locationRestriction).toBeDefined()
+    // locationBias, nicht locationRestriction: die Text-Search-API akzeptiert
+    // bei restriction nur ein Rechteck, wir schicken einen Kreis. Als
+    // restriction ergab das HTTP 400 bei jeder Suche mit Geo-Filter.
+    expect((body as { locationBias?: unknown }).locationBias).toBeDefined()
   })
 
   it("passes a cursor through as a page token", async () => {
@@ -268,5 +271,77 @@ describe("toRawEntity", () => {
   it("keeps the raw payload for later re-normalization", () => {
     const entity = toRawEntity({ id: "x", displayName: { text: "Test" }, rating: 4.5 })
     expect(entity?.raw).toMatchObject({ id: "x", rating: 4.5 })
+  })
+})
+
+describe("the request body Google actually accepts", () => {
+  it("sends a circle as locationBias, never as locationRestriction", async () => {
+    // Die Text-Search-API akzeptiert bei locationRestriction ausschliesslich ein
+    // Rechteck. Wir bauen aus der bbox einen Kreis - als restriction geschickt
+    // ergab das HTTP 400 bei jeder Suche mit Geo-Filter.
+    const fetchImpl = fakeFetch(JSON.stringify({ places: [] }))
+    await makeAdapter(fetchImpl).search({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [
+          { op: "eq", key: "core.category", value: "restaurant" },
+          { op: "within", key: "core.geo", value: { bbox: [48.1, 13.95, 48.35, 14.4] } },
+        ],
+      },
+    })
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body ?? "{}"))
+    expect(body.locationBias?.circle).toBeDefined()
+    expect(body.locationRestriction).toBeUndefined()
+  })
+
+  it("names Googles error status, not just the HTTP code", async () => {
+    // "responded with 400" macht einen Konfigurationsfehler von einem falsch
+    // gebauten Request ununterscheidbar. INVALID_ARGUMENT sagt "wir bauen den
+    // Request falsch", PERMISSION_DENIED "der Schluessel stimmt nicht".
+    const fetchImpl = fakeFetch(
+      JSON.stringify({
+        error: { status: "INVALID_ARGUMENT", message: "Invalid location restriction." },
+      }),
+      400
+    )
+
+    await expect(
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "eq", key: "core.category", value: "restaurant" },
+      })
+    ).rejects.toThrow(/400 \(INVALID_ARGUMENT\)/)
+  })
+
+  it("leaves error.message out entirely, because Google puts the key in it", async () => {
+    // Nicht hypothetisch: Google antwortet mit "API key not valid: AIza...".
+    // Deshalb nur der Enum-Wert, nie der Freitext.
+    const fetchImpl = fakeFetch(
+      JSON.stringify({
+        error: { status: "PERMISSION_DENIED", message: "API key not valid: AIzaSyGEHEIM" },
+      }),
+      403
+    )
+
+    const attempt = () =>
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "eq", key: "core.category", value: "restaurant" },
+      })
+
+    await expect(attempt()).rejects.toThrow(/PERMISSION_DENIED/)
+    await expect(attempt()).rejects.not.toThrow(/AIzaSyGEHEIM/)
+  })
+
+  it("stays usable when the error body is not JSON at all", async () => {
+    const fetchImpl = fakeFetch("<html>502 Bad Gateway</html>", 502)
+    await expect(
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "eq", key: "core.category", value: "restaurant" },
+      })
+    ).rejects.toThrow(/502/)
   })
 })

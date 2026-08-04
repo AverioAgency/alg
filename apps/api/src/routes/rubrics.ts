@@ -337,8 +337,49 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
       const companyIds =
         body.company_ids ?? (await allCompanyIds(ctx, rubric.targetType, options.db))
 
+      /**
+       * Nichts zu bewerten ist kein Fehler.
+       *
+       * `all: true` auf einem leeren Workspace ist eine voellig gueltige
+       * Anfrage mit leerem Ergebnis - ein 400 machte daraus im Frontend eine
+       * rote Fehlermeldung, obwohl der Nutzer nur eine Suche laufen liess, die
+       * nichts fand. Ein abgeschlossener Lauf ueber null Firmen sagt dasselbe,
+       * ohne wie ein Defekt auszusehen, und der Client braucht keinen Sonderpfad.
+       *
+       * Ein explizit angefragtes, aber leeres `company_ids` bleibt ein Fehler
+       * (oben abgefangen): dann hat der Aufrufer etwas Widerspruechliches
+       * geschickt.
+       */
       if (companyIds.length === 0) {
-        throw new AppError(PROBLEM_TYPES.VALIDATION_FAILED, { detail: "No companies to score." })
+        const [emptyRun] = await withWorkspace(
+          ctx,
+          async ({ tx, values }) =>
+            tx
+              .insert(scoringRuns)
+              .values(
+                values({
+                  rubricId: id,
+                  status: "completed",
+                  companiesTotal: 0,
+                  companiesDone: 0,
+                  startedAt: new Date(),
+                  finishedAt: new Date(),
+                })
+              )
+              .returning(),
+          options.db
+        )
+
+        res.status(202).json({
+          run_id: emptyRun!.id,
+          status: "completed",
+          companies: 0,
+          llm_stage: llmStageStatus(parseDefinition(rubric.definition), options.llmClient),
+          // Gesagt statt verschwiegen: sonst wirkt eine leere Lead-Liste wie ein
+          // Fehler in der Bewertung, obwohl die Suche nichts gefunden hat.
+          note: "Keine Firmen im Workspace - die Suche hat nichts gefunden.",
+        })
+        return
       }
 
       const [run] = await withWorkspace(
