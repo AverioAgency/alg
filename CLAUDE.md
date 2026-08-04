@@ -216,6 +216,12 @@ Things that will bite, roughly in order of how expensive the mistake is:
   never a path. Traefik does not serve the storage directory.
 - **Backups cover the database _and_ the storage directory.** A `pg_dump` alone
   leaves a catalogue of documents that no longer exist.
+- **Eine Migration ohne Journal-Eintrag läuft nie.** Drizzle führt aus, was in
+  `migrations/meta/_journal.json` steht, nicht was im Ordner liegt. Eine von
+  Hand geschriebene `.sql` ohne Eintrag wird beim Deploy stillschweigend
+  übersprungen und fällt erst als HTTP 500 auf, wenn der neue Code eine Spalte
+  liest, die es auf dem Server nicht gibt. `migrations.test.ts` prüft beide
+  Richtungen.
 - **Migrations are forward-compatible.** Never drop a column in the same deploy as
   the code that stops using it.
 - **User-visible strings are German, via i18n keys.** Code, identifiers and comments

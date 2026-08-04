@@ -1370,6 +1370,13 @@ export function openApiDocument(version: string): Record<string, unknown> {
             { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200 } },
             { name: "cursor", in: "query", schema: { type: "string" } },
             { name: "qualified_only", in: "query", schema: { type: "boolean" } },
+            {
+              name: "include_dismissed",
+              in: "query",
+              description:
+                "Dismissed leads are hidden by default - that is the point of dismissing. Pass true for a \"show dismissed\" view that can offer bringing them back.",
+              schema: { type: "boolean", default: false },
+            },
           ],
           responses: {
             "200": { description: "Ranked leads with their breakdown" },
@@ -1399,6 +1406,43 @@ export function openApiDocument(version: string): Record<string, unknown> {
                   required: ["feedback"],
                   properties: {
                     feedback: { type: "string", enum: ["good", "bad"], nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Updated score" },
+            "404": { $ref: "#/components/responses/Problem" },
+          },
+        },
+      },
+      "/rubrics/{id}/leads/{companyId}/dismiss": {
+        put: {
+          summary: "Take a lead out of the list without deleting it",
+          description:
+            "Deliberately not a DELETE: the company came from a paid search, and a deleted lead would come back as a new hit on the next run - the same business, the same way again. Dismissing means \"seen and done with\" and is reversible with dismissed: false. Separate from feedback because it says something else: dismissing a lead you already know says nothing about whether the rubric judged it well, and calibration reads only feedback.",
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+            {
+              name: "companyId",
+              in: "path",
+              required: true,
+              schema: { type: "string", format: "uuid" },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["dismissed"],
+                  properties: {
+                    dismissed: {
+                      type: "boolean",
+                      description: "false brings the lead back into the list.",
+                    },
                   },
                 },
               },

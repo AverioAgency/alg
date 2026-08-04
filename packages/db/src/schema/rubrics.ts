@@ -92,6 +92,19 @@ export const leadScores = pgTable(
     /** The user's own verdict. Feeds threshold calibration. */
     feedback: varchar("feedback", { length: 8 }).$type<"good" | "bad" | null>(),
     feedbackAt: timestamp("feedback_at", { withTimezone: true }),
+    /**
+     * Aus der Liste genommen, aber nicht geloescht.
+     *
+     * Bewusst getrennt von `feedback`: "passt nicht zu mir" und "die Rubrik hat
+     * ihn falsch bewertet" sind verschiedene Aussagen. Wer einen Lead
+     * ausblendet, weil er ihn schon kennt, hat damit nichts ueber die Qualitaet
+     * der Bewertung gesagt - die Kalibrierung darf das nicht als Urteil lesen.
+     *
+     * Ein Zeitstempel statt eines Flags, weil "wann" spaeter die interessantere
+     * Frage ist als "ob", und weil null hier eindeutig "nicht ausgeblendet"
+     * heisst. Zurueckholen setzt ihn auf null - nichts geht verloren.
+     */
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
     scoredAt: timestamp("scored_at", { withTimezone: true }).notNull().defaultNow(),
     ...timestampColumns(),
   },
@@ -105,6 +118,11 @@ export const leadScores = pgTable(
       sql`${table.total} DESC`,
       table.id
     ),
+    // Die Liste zeigt fast immer nur nicht-ausgeblendete Leads. Ein partieller
+    // Index haelt genau diese Zeilen vor, statt den Rang-Index zu verbreitern.
+    index("lead_scores_visible_idx")
+      .on(table.workspaceId, table.rubricId, sql`${table.total} DESC`)
+      .where(sql`${table.dismissedAt} is null`),
   ]
 )
 
