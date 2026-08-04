@@ -118,6 +118,61 @@ describe("interpretSearch", () => {
   })
 })
 
+describe("eine Branche ohne passenden Slug", () => {
+  it("keeps the trade as a name filter instead of dropping it", async () => {
+    /**
+     * "Elektroniker" bildet auf keinen Slug ab. Ohne Ersatz fiel die Branche
+     * ersatzlos weg, die Abfrage wurde zur Rundumsuche und lieferte einen Arzt,
+     * zwei Supermaerkte und zwei Lokale - auf die Frage nach Elektronikern.
+     */
+    const result = await interpretSearch({
+      ...BASE,
+      description: "Elektroniker in Linz",
+      client: fakeClient({
+        region: "oberoesterreich",
+        city: "Linz",
+        categories: [],
+        trade_term: "Elektro",
+        target_type: null,
+        limit: null,
+        for_rubric: [],
+        summary: "Elektrobetriebe in Linz.",
+      }),
+    })
+
+    expect(result.categories).toStrictEqual([])
+    expect(result.tradeTerm).toBe("Elektro")
+  })
+
+  it("becomes a core.name filter in the spec", () => {
+    const after = applyInterpretation(startClarification("Elektroniker in Linz", "company"), {
+      region: "oberoesterreich",
+      city: "Linz",
+      categories: [],
+      tradeTerm: "Elektro",
+      limit: null,
+    })
+
+    expect(JSON.stringify(after.spec.filters)).toContain("core.name")
+  })
+
+  it("prefers a real category over the name filter", () => {
+    // Der Namensfilter ist der Notnagel, nicht die erste Wahl: er findet den
+    // Betrieb nicht, der sich anders nennt.
+    const after = applyInterpretation(startClarification("Tischler in Linz", "company"), {
+      region: "oberoesterreich",
+      city: "Linz",
+      categories: ["craft_business"],
+      tradeTerm: "Tischler",
+      limit: null,
+    })
+
+    const filters = JSON.stringify(after.spec.filters)
+    expect(filters).toContain("core.category")
+    expect(filters).not.toContain("core.name")
+  })
+})
+
 describe("applyInterpretation", () => {
   it("stops the wizard from asking what the user already typed", () => {
     const before = startClarification("Baufirmen in Linz", "company")

@@ -188,6 +188,15 @@ Things that will bite, roughly in order of how expensive the mistake is:
   zurück — um danach jedes Objekt zu verwerfen. Teuerste denkbare Abfrage,
   garantiert leeres Ergebnis, und die Quelle der 504er. Der Adapter sagt jetzt,
   dass er die falsche Quelle ist, statt eine andere Frage zu beantworten.
+- **Eine Branche ohne passenden Slug darf nicht ersatzlos verschwinden.**
+  "Elektroniker" bildet auf keine der 41 Kategorien ab. Die Interpretation ließ
+  das Feld leer, Overpass fiel auf die offene Suche zurück (`shop`, `amenity`,
+  `craft`, `office`, `tourism`) — und lieferte auf "Elektroniker in Linz" einen
+  Arzt, zwei Supermärkte und zwei Lokale. Alle echt, alle aus Linz, alle
+  falsch. `tradeTerm` fängt das ab: das Wort geht als `core.name`-Filter in die
+  Suche. Gröber als eine Kategorie (der Betrieb, der sich anders nennt, fehlt),
+  aber es beantwortet die gestellte Frage. Live geprüft: `craft`/`shop` mit
+  `name~"Elektro"` über Linz findet 16 Elektrobetriebe in 6s.
 - **`core.category` ist quellenneutral und deshalb nicht nachprüfbar.** Der
   Filter trägt einen Slug (`craft_business`), Overpass liefert rohe OSM-Werte
   (`carpenter`, `works`), Places Google-Typen (`store`). Slug gegen Tag trifft

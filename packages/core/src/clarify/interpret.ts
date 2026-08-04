@@ -50,6 +50,14 @@ export interface InterpretedSearch {
    * "expandiert gerade". Gehen als LLM-Kriterium in die Rubrik.
    */
   forRubric: string[]
+  /**
+   * Branchenwort für die Namenssuche, wenn keine Kategorie passt.
+   *
+   * "Elektroniker" bildet auf keinen Slug ab. Ohne dieses Feld fiel die Branche
+   * ersatzlos weg und die Abfrage wurde zur Rundumsuche: ein Arzt, zwei
+   * Supermärkte und zwei Lokale als Antwort auf "Elektroniker in Linz".
+   */
+  tradeTerm: string | null
   /** Was das Modell aus dem Text gelesen hat, in einem Satz. Für die Anzeige. */
   summary: string
 }
@@ -59,8 +67,13 @@ const SYSTEM_PROMPT = [
   "Firmendatenbank.",
   "",
   "Harte Regeln:",
-  "- Branchen ausschließlich als Slugs aus der übergebenen Liste. Passt keiner,",
-  "  lass die Liste leer - ein erfundener Slug findet nichts.",
+  "- Branchen ausschließlich als Slugs aus der übergebenen Liste. Wähle den",
+  "  nächstliegenden, auch wenn er weiter gefasst ist: ein Elektriker ist ein",
+  "  craft_business, ein Baumeister auch. Ein erfundener Slug findet nichts.",
+  "- Passt wirklich kein Slug, gehört die Branche nach trade_term - dem Wort,",
+  "  das im Firmennamen stehen dürfte ('Elektro', 'Bau'). Sie einfach",
+  "  wegzulassen macht aus einer Branchensuche eine Suche nach allem, was es",
+  "  im Gebiet gibt - das ist nie die gestellte Frage.",
   "- Region nur, wenn der Text eine nennt oder eindeutig impliziert. Eine Stadt",
   "  gehört zusätzlich nach city: 'Linz' ist oberoesterreich UND city=Linz.",
   "- Rate nichts hinzu. Steht keine Region im Text, ist region null - eine",
@@ -88,6 +101,11 @@ const SCHEMA_BASE = {
       items: { type: "string" },
       description:
         "Wünsche, die keine Quelle filtern kann - je eine kurze, prüfbare Aussage.",
+    },
+    trade_term: {
+      type: ["string", "null"],
+      description:
+        "Das Branchenwort für die Namenssuche, wenn kein Slug passt ('Elektro', 'Bau'). Sonst null.",
     },
     summary: { type: "string" },
   },
@@ -203,6 +221,10 @@ export async function interpretSearch(
     limit:
       typeof record["limit"] === "number" && Number.isInteger(record["limit"]) && record["limit"] > 0
         ? Math.min(record["limit"], 5000)
+        : null,
+    tradeTerm:
+      typeof record["trade_term"] === "string" && record["trade_term"].length > 0
+        ? record["trade_term"]
         : null,
     forRubric: Array.isArray(record["for_rubric"])
       ? record["for_rubric"].filter(

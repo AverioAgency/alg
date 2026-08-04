@@ -321,6 +321,7 @@ export function applyInterpretation(
     region: string | null
     city: string | null
     categories: string[]
+    tradeTerm?: string | null
     limit: number | null
   }
 ): ClarifyState {
@@ -331,6 +332,26 @@ export function applyInterpretation(
   }
   if (interpreted.categories.length > 0) {
     current = applyAnswer(current, { questionId: "category", value: interpreted.categories })
+  } else if (interpreted.tradeTerm) {
+    /**
+     * Keine passende Kategorie: dann wenigstens nach dem Wort im Namen suchen.
+     *
+     * "Elektroniker" bildet auf keinen Slug ab. Die Branche ersatzlos
+     * fallenzulassen machte aus der Suche eine Rundumsuche - ein Arzt, zwei
+     * Supermaerkte und zwei Lokale als Antwort auf "Elektroniker in Linz".
+     *
+     * Ein Namensfilter ist gröber als eine Kategorie und findet den Betrieb
+     * nicht, der sich anders nennt. Aber er beantwortet die gestellte Frage,
+     * statt eine andere.
+     */
+    current = {
+      ...current,
+      spec: withFilter(current.spec, {
+        op: "contains",
+        key: "core.name",
+        value: interpreted.tradeTerm,
+      }),
+    }
   }
   if (interpreted.limit) {
     current = applyAnswer(current, { questionId: "limit", value: interpreted.limit })
