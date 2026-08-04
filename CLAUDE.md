@@ -120,6 +120,19 @@ Things that will bite, roughly in order of how expensive the mistake is:
   nach Präfix, nicht gegen eine Liste bekannter Signale, damit ein neuer Provider
   nicht durch Vergessen hineinrutscht. Die Bedingung greift weiterhin, nur
   später: Anreicherung füllt, Rubrik bewertet.
+- **Overpass meldet Laufzeitfehler mit HTTP 200.** Ein Zeitlimit kommt als
+  Status 200, leerer Elementliste und dem Grund im Feld `remark`
+  (`runtime error: Query timed out ... after 36 seconds`). Wer nur den Status
+  prüft, liest das als "in Österreich gibt es keine Restaurants" — eine
+  erfolgreiche Antwort auf eine Abfrage, die nie lief. Der Adapter wirft jetzt,
+  aber nur bei leerer Liste: `remark` trägt gelegentlich auch Hinweise zu einer
+  geglückten Abfrage.
+- **Ein Bias-Kreis über 50 km verfälscht die Frage.** Google kappt den Radius
+  dort. Aus "Restaurants in Österreich" (Halbdiagonale 322 km) wurde ein
+  50-km-Kreis um 47.7/13.3 — Salzburger Bergland, überwiegend Alpen, genau ein
+  Treffer. Zu große Gebiete bekommen jetzt gar keinen Bias: `locationBias`
+  gewichtet nur, das Weglassen heißt "such breit" und nicht "such woanders",
+  und `core.geo` schneidet als Nachfilter exakt zu.
 - **Eine Branche, die OSM nicht kennt, ist kein Grund zur offenen Suche.**
   `toCategoryTags` liefert für `it_services` oder `erp` nichts, der Schlüssel
   landet in `unsupported`, und die Query fiel auf alle Geschäfte des Bundeslandes

@@ -385,6 +385,9 @@ function describePlacesError(body: string): string {
   }
 }
 
+/** Googles Obergrenze fuer den Bias-Radius. Darueber verfaelscht ein Kreis die Frage. */
+const PLACES_MAX_BIAS_RADIUS_M = 50_000
+
 function toLocationBias(value: unknown): PlacesQueryPlan["locationBias"] {
   if (typeof value !== "object" || value === null) return undefined
   const spec = value as { lat?: unknown; lon?: unknown; radiusMetres?: unknown; bbox?: unknown }
@@ -398,7 +401,24 @@ function toLocationBias(value: unknown): PlacesQueryPlan["locationBias"] {
     const latSpanM = Math.abs((north as number) - (south as number)) * 111_320
     const lonSpanM =
       Math.abs((east as number) - (west as number)) * 111_320 * Math.cos((lat * Math.PI) / 180)
-    const radius = Math.min(50_000, Math.sqrt(latSpanM ** 2 + lonSpanM ** 2) / 2)
+    const radius = Math.sqrt(latSpanM ** 2 + lonSpanM ** 2) / 2
+
+    /**
+     * Ein zu grosses Gebiet bekommt gar keinen Bias, statt eines falschen.
+     *
+     * Places kappt den Radius bei 50 km. Aus "Restaurants in Oesterreich"
+     * (Halbdiagonale 322 km) wurde damit ein 50-km-Kreis um 47.7/13.3 - das
+     * Salzburger Bergland, ueberwiegend Alpen. Die Suche lieferte folgerichtig
+     * genau einen Treffer und sah aus, als gaebe es in Oesterreich keine
+     * Restaurants.
+     *
+     * locationBias gewichtet nur, es schliesst nichts aus. Ihn wegzulassen
+     * heisst also "such im ganzen Sprachraum" und nicht "such woanders" -
+     * deutlich naeher an der Frage als ein Kreis um einen Punkt, den niemand
+     * gemeint hat. Die Region steckt ohnehin im textQuery.
+     */
+    if (radius > PLACES_MAX_BIAS_RADIUS_M) return undefined
+
     return { circle: { center: { latitude: lat, longitude: lon }, radius } }
   }
 

@@ -192,6 +192,42 @@ describe("OverpassAdapter", () => {
   })
 })
 
+describe("a runtime error that arrives as HTTP 200", () => {
+  /**
+   * Der Fall, der "Restaurants in Oesterreich" dreimal leer zurueckgab:
+   * Overpass meldet ein Zeitlimit mit Status 200, leerer Elementliste und dem
+   * Grund in `remark`. Wer nur den Status prueft, liest das als "es gibt dort
+   * keine Restaurants" - eine erfolgreiche Antwort auf eine Abfrage, die nie
+   * gelaufen ist.
+   */
+  const timedOut = JSON.stringify({
+    version: 0.6,
+    elements: [],
+    remark: 'runtime error: Query timed out in "query" at line 1 after 36 seconds.',
+  })
+
+  it("treats it as a failure instead of an empty region", async () => {
+    const adapter = makeAdapter(fakeFetch(timedOut))
+    await expect(adapter.search(linzSpec)).rejects.toThrow(/timed out/i)
+  })
+
+  it("says what to do about it", async () => {
+    const adapter = makeAdapter(fakeFetch(timedOut))
+    await expect(adapter.search(linzSpec)).rejects.toThrow(/Gebiet/)
+  })
+
+  it("keeps results that arrive with a remark attached", async () => {
+    // remark traegt gelegentlich auch Hinweise zu einer geglueckten Abfrage.
+    // Treffer wegzuwerfen, weil eine Anmerkung dabeisteht, waere schlimmer.
+    const fixture: { elements: unknown[]; remark?: string } = JSON.parse(
+      await loadFixture("linz-restaurants.json")
+    )
+    fixture.remark = "some advisory note"
+    const { entities } = await makeAdapter(fakeFetch(JSON.stringify(fixture))).search(linzSpec)
+    expect(entities).toHaveLength(4)
+  })
+})
+
 describe("OverpassAdapter resilience", () => {
   /** Returns the given responses in order, so a retry sees a different one. */
   function sequencedFetch(responses: { status: number; body: string }[]) {

@@ -201,6 +201,51 @@ describe("PlacesAdapter", () => {
   })
 })
 
+describe("an area too large for a location bias", () => {
+  /**
+   * "Restaurants in Oesterreich" lieferte genau einen Treffer. Places kappt den
+   * Bias-Radius bei 50 km, aus der Halbdiagonale von 322 km wurde also ein
+   * 50-km-Kreis um 47.7/13.3 - Salzburger Bergland, ueberwiegend Alpen. Der
+   * Bias beantwortete eine andere Frage als die gestellte.
+   */
+  const austria: SearchSpec = {
+    targetType: "local_business",
+    filters: {
+      op: "and",
+      children: [
+        { op: "eq", key: "core.category", value: "restaurant" },
+        { op: "within", key: "core.geo", value: { bbox: [46.37, 9.53, 49.02, 17.16] } },
+      ],
+    },
+    limit: 10,
+  }
+
+  it("sends no bias rather than one around a point nobody meant", async () => {
+    const fetchImpl = fakeFetch(await readFile(join(FIXTURES, "linz-restaurants.json"), "utf8"))
+    await makeAdapter(fetchImpl).search(austria)
+
+    const init = fetchImpl.mock.calls[0]?.[1] as { body: string }
+    const body: unknown = JSON.parse(init.body)
+    expect((body as { locationBias?: unknown }).locationBias).toBeUndefined()
+  })
+
+  it("leaves the bbox to the post-filter, which cuts exactly", () => {
+    // core.geo landet in unsupported - der Aufrufer filtert nach, statt sich
+    // auf einen Kreis zu verlassen, der die Frage verfaelscht.
+    const plan = planPlacesQuery(austria)
+    expect(plan.unsupported).toContain("core.geo")
+  })
+
+  it("still biases an area Places can represent", async () => {
+    const fetchImpl = fakeFetch(await readFile(join(FIXTURES, "linz-restaurants.json"), "utf8"))
+    await makeAdapter(fetchImpl).search(linzSpec)
+
+    const init = fetchImpl.mock.calls[0]?.[1] as { body: string }
+    const body: unknown = JSON.parse(init.body)
+    expect((body as { locationBias?: unknown }).locationBias).toBeDefined()
+  })
+})
+
 describe("PlacesAdapter.estimateCost", () => {
   it("reports a real monetary cost", () => {
     const estimate = makeAdapter(fakeFetch("{}")).estimateCost(linzSpec)

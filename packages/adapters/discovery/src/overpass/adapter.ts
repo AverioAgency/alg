@@ -31,6 +31,16 @@ const OverpassElementSchema = z.object({
 
 const OverpassResponseSchema = z.object({
   elements: z.array(OverpassElementSchema),
+  /**
+   * Overpass meldet Laufzeitfehler mit HTTP 200 und leerer Elementliste.
+   *
+   * Der Text steht nur hier drin, etwa:
+   *   "runtime error: Query timed out in \"query\" at line 1 after 36 seconds."
+   *
+   * Wer nur den Status prueft, liest das als "in Oesterreich gibt es keine
+   * Restaurants" - eine erfolgreiche Antwort auf eine Abfrage, die nie lief.
+   */
+  remark: z.string().optional(),
 })
 
 export type OverpassElement = z.infer<typeof OverpassElementSchema>
@@ -138,17 +148,25 @@ export class OverpassAdapter implements DiscoveryAdapter {
       endpoint: options.endpoint,
       userAgent: options.userAgent,
       /**
-       * 45s, nicht 90s.
+       * 75s auf dem Hauptendpunkt, 15s auf den Mirrors.
        *
-       * Der Wert wird mit drei Endpunkten und zwei Versuchen multipliziert: bei
-       * 90s wartet ein Lauf im schlechtesten Fall neun Minuten, bevor er
-       * aufgibt - und der Nutzer sieht die ganze Zeit einen Ladebalken bei null
-       * Treffern. Gemessen fuer Oberoesterreich: eine Kategorie-Abfrage kommt in
-       * 5-15s zurueck, ein ueberlasteter Endpunkt scheitert nach 8-13s von
-       * selbst. Was 45s nicht schafft, schafft auch 90s meist nicht - es kostet
-       * nur die doppelte Wartezeit, bis der Mirror drankommt.
+       * Gemessen mit "Restaurants in Oesterreich" (20.2 Quadratgrad), dem Fall
+       * der wiederholt leer zurueckkam:
+       *
+       *   nur node, [timeout:180]        200 nach 47s, 10 Treffer
+       *   node+way+relation, [timeout:35] 200 nach 45s, 0 Treffer + remark
+       *                                   "Query timed out after 36 seconds"
+       *
+       * Mit 45s brach also *unsere* Seite ab, bevor der Server fertig war - und
+       * bei einem knapperen [timeout:] gab der Server auf und meldete das in
+       * einem Feld, das niemand las. Ein ganzes Land ist eine legitime Frage;
+       * sie dauert nur laenger als eine Stadt.
+       *
+       * Die Obergrenze bleibt endlich, weil ein Nutzer davor wartet. Die
+       * Mirrors bekommen weiterhin nur 15s (siehe mirrorTimeoutMs), sonst
+       * kostet ein ausgefallener Mirror mehr Zeit als der Hauptendpunkt.
        */
-      timeoutMs: options.timeoutMs ?? 45_000,
+      timeoutMs: options.timeoutMs ?? 75_000,
       mirrorTimeoutMs: options.mirrorTimeoutMs ?? 15_000,
       maxBytes: options.maxBytes ?? 32 * 1024 * 1024,
       fallbackEndpoints: options.fallbackEndpoints ?? OVERPASS_FALLBACK_ENDPOINTS,
@@ -246,10 +264,15 @@ export class OverpassAdapter implements DiscoveryAdapter {
     /**
      * Overpass' eigenes Zeitlimit muss echt kleiner sein als unseres.
      *
-     * Vorher waren beide 45s: wir brachen also genau in dem Moment ab, in dem
-     * der Server seine Antwort - und sei es eine ehrliche Fehlermeldung -
+     * Vorher waren beide 45s: wir brachen genau in dem Moment ab, in dem der
+     * Server seine Antwort - und sei es eine ehrliche Fehlermeldung -
      * geschickt haette. Ein serverseitiger Abbruch nennt den Grund, unser
      * eigener sagt nur "aborted". Mit 10s Luft gewinnt immer der Server.
+     *
+     * Gerechnet wird gegen das Limit des Hauptendpunkts, nicht gegen das der
+     * Mirrors: die Query wird einmal gebaut und an alle geschickt, und ein
+     * kleineres [timeout:] wuerde dem Hauptendpunkt die Zeit nehmen, die er
+     * fuer ein grosses Gebiet tatsaechlich braucht.
      */
     const serverTimeoutSeconds = Math.max(5, Math.floor(this.options.timeoutMs / 1000) - 10)
     const ql = renderOverpassQl(plan, serverTimeoutSeconds)
@@ -267,6 +290,26 @@ export class OverpassAdapter implements DiscoveryAdapter {
     const result = OverpassResponseSchema.safeParse(parsed)
     if (!result.success) {
       throw new Error(`Overpass returned an unexpected shape: ${result.error.message}`)
+    }
+
+    /**
+     * Ein Laufzeitfehler ist ein Fehler, auch mit HTTP 200.
+     *
+     * Nur wenn nichts zurueckkam: `remark` traegt gelegentlich auch Hinweise zu
+     * einer geglueckten Abfrage, und Treffer wegzuwerfen, weil eine Anmerkung
+     * dabeisteht, waere schlimmer als die Anmerkung zu ignorieren.
+     */
+    if (result.data.remark && result.data.elements.length === 0) {
+      // Der haeufigste Fall ist ein Zeitlimit, und dagegen kann der Nutzer
+      // etwas tun - also sagen wir, was, statt die Rohmeldung durchzureichen.
+      const timedOut = /timed out/i.test(result.data.remark)
+      throw new Error(
+        timedOut
+          ? `Overpass hat die Abfrage abgebrochen (${result.data.remark.trim()}). ` +
+            "Das Gebiet ist für diese Branche zu groß — ein Bundesland oder ein " +
+            "Ballungsraum statt des ganzen Landes kommt zurück."
+          : `Overpass: ${result.data.remark.trim()}`
+      )
     }
 
     const entities = result.data.elements
