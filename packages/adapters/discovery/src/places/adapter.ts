@@ -319,7 +319,17 @@ export function planPlacesQuery(spec: SearchSpec): PlacesQueryPlan {
     }
 
     switch (node.key) {
-      case "core.category":
+      case "core.category": {
+        const values = Array.isArray(node.value) ? node.value : [node.value]
+        const usable = values.filter((v): v is string => typeof v === "string" && v.length > 0)
+        if (usable.length > 0) {
+          // Uebersetzt, nicht durchgereicht: siehe PLACES_CATEGORY_QUERY.
+          words.push(...usable.map((slug) => PLACES_CATEGORY_QUERY[slug] ?? slug.replace(/_/g, " ")))
+        } else {
+          plan.unsupported.push(node.key)
+        }
+        break
+      }
       case "core.name":
       case "core.city": {
         const values = Array.isArray(node.value) ? node.value : [node.value]
@@ -383,6 +393,62 @@ function describePlacesError(body: string): string {
   } catch {
     return ""
   }
+}
+
+/**
+ * Kategorie-Slug -> Suchbegriff, den Google versteht.
+ *
+ * Die Slugs sind quellenneutrale Bezeichner; Overpass bildet sie auf OSM-Tags
+ * ab, Places braucht Text. Ohne diese Tabelle ging der Slug woertlich in die
+ * Anfrage: Google suchte nach der Zeichenkette "car_repair" und fand
+ * erwartungsgemaess fast nichts. Der Unterschied ist gross - "car_repair"
+ * liefert Einzeltreffer, "Autowerkstatt" eine volle Seite.
+ *
+ * Deutsch, weil languageCode/regionCode auf AT stehen und die Betriebe hier so
+ * heissen. Was fehlt, faellt auf den Slug mit Leerzeichen statt Unterstrichen
+ * zurueck ("estate agent") - unschoen, aber suchbar, und eine neue Kategorie
+ * bricht nichts.
+ */
+const PLACES_CATEGORY_QUERY: Record<string, string> = {
+  restaurant: "Restaurant",
+  cafe: "Café",
+  bar: "Bar",
+  hotel: "Hotel",
+  bakery: "Bäckerei",
+  butcher: "Fleischerei",
+  hairdresser: "Friseur",
+  supermarket: "Supermarkt",
+  pharmacy: "Apotheke",
+  doctor: "Arztpraxis",
+  dentist: "Zahnarzt",
+  car_repair: "Autowerkstatt",
+  car_dealer: "Autohaus",
+  florist: "Blumengeschäft",
+  optician: "Optiker",
+  furniture: "Möbelhaus",
+  hardware: "Baumarkt",
+  clothes: "Bekleidungsgeschäft",
+  electronics: "Elektronikgeschäft",
+  craft: "Handwerksbetrieb",
+  gym: "Fitnessstudio",
+  veterinary: "Tierarzt",
+  company: "Unternehmen",
+  office: "Büro",
+  craft_business: "Handwerksbetrieb",
+  industrial: "Produktionsbetrieb",
+  wholesale: "Großhandel",
+  it_company: "IT-Unternehmen",
+  lawyer: "Rechtsanwalt",
+  accountant: "Steuerberater",
+  insurance: "Versicherung",
+  estate_agent: "Immobilienmakler",
+  architect: "Architekturbüro",
+  engineer: "Ingenieurbüro",
+  advertising: "Werbeagentur",
+  logistics: "Spedition",
+  research: "Forschungsinstitut",
+  employment_agency: "Personalvermittlung",
+  financial: "Finanzdienstleister",
 }
 
 /** Googles Obergrenze fuer den Bias-Radius. Darueber verfaelscht ein Kreis die Frage. */

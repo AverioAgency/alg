@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
-import { type SearchSpec } from "@alg/shared"
+import { categoriesFor, type SearchSpec } from "@alg/shared"
 import { PlacesAdapter, planPlacesQuery, toRawEntity } from "../adapter.js"
 import { estimatePlacesCost, CURRENT_PLACES_PRICING } from "../pricing.js"
 
@@ -198,6 +198,44 @@ describe("PlacesAdapter", () => {
       fakeFetch(JSON.stringify({ places: [{ noId: true }, { alsoNoId: true }] }))
     )
     await expect(adapter.search(linzSpec)).rejects.toThrow(/kein einziger/)
+  })
+})
+
+describe("category slugs become words Google can search", () => {
+  // Der Slug ging vorher woertlich raus: Google suchte nach der Zeichenkette
+  // "car_repair" und lieferte Einzeltreffer statt einer vollen Seite.
+  it("translates a slug into a real search term", () => {
+    const plan = planPlacesQuery({
+      targetType: "local_business",
+      filters: { op: "eq", key: "core.category", value: "car_repair" },
+    })
+    expect(plan.textQuery).toBe("Autowerkstatt")
+  })
+
+  it("never sends an underscore to the API", () => {
+    // Auch fuer eine Kategorie, die niemand in die Tabelle eingetragen hat:
+    // "estate agent" ist suchbar, "estate_agent" nicht.
+    for (const category of categoriesFor("local_business").concat(categoriesFor("company"))) {
+      const plan = planPlacesQuery({
+        targetType: category.targetType,
+        filters: { op: "eq", key: "core.category", value: category.slug },
+      })
+      expect(plan.textQuery, `${category.slug} -> ${plan.textQuery}`).not.toContain("_")
+    }
+  })
+
+  it("combines category and city into one query", () => {
+    const plan = planPlacesQuery({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [
+          { op: "eq", key: "core.category", value: "restaurant" },
+          { op: "eq", key: "core.city", value: "Wien" },
+        ],
+      },
+    })
+    expect(plan.textQuery).toBe("Restaurant Wien")
   })
 })
 

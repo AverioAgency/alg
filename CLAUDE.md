@@ -120,6 +120,18 @@ Things that will bite, roughly in order of how expensive the mistake is:
   for; when measuring by hand, query serially (the rate limit is 2) and expect to
   fall back to `overpass.kumi.systems`.
 
+- **Ein Kategorie-Slug ist kein Suchbegriff.** Die Slugs sind quellenneutrale
+  Bezeichner; Overpass bildet sie auf OSM-Tags ab, Places braucht Text. Ohne
+  `PLACES_CATEGORY_QUERY` ging `car_repair` wörtlich an Google, das dann nach
+  dieser Zeichenkette suchte und Einzeltreffer lieferte statt einer vollen
+  Seite. Ein Test prüft, dass kein Slug mit Unterstrich die API erreicht.
+- **Eine leere Rubrik schaltet auch die Datenbeschaffung ab.** Weil die
+  Anreicherung bedarfsgetrieben läuft, startet ein Provider nur, wenn etwas
+  seine Signale referenziert. `criteria: []` heißt deshalb nicht nur "kein
+  Scoring", sondern auch: keine Website, kein Impressum, keine E-Mail wird je
+  gesucht. Jeder Lead bekam 0 Punkte und blieb datenlos. Wer eine Rubrik
+  automatisch anlegt, nimmt `POST /v1/rubrics/suggest` oder eine echte
+  Standardrubrik — niemals eine leere.
 - **Ein erfundener Filterschlüssel ist der teuerste stille Fehler im System.**
   Das Zod-Schema lässt `key` bewusst frei (`@alg/shared` kennt die Registry
   nicht), kein Adapter bedient ihn, also landet er im Nachfilter — und dort
