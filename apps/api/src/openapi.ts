@@ -446,6 +446,13 @@ export function openApiDocument(version: string): Record<string, unknown> {
               schema: { type: "string", minLength: 2, maxLength: 2 },
             },
             {
+              name: "run_id",
+              in: "query",
+              description:
+                "Only companies this run found first. Without it a client can only show the whole workspace, so a search for builders in Linz came back full of restaurants from earlier runs.",
+              schema: { type: "string", format: "uuid" },
+            },
+            {
               name: "has_website",
               in: "query",
               schema: { type: "string", enum: ["true", "false"] },

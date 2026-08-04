@@ -23,6 +23,19 @@ const ListQuerySchema = z.object({
   country: z.string().length(2).optional(),
   target_type: z.enum(["local_business", "company", "person", "list"]).optional(),
   has_website: z.enum(["true", "false"]).optional(),
+  /**
+   * Nur die Firmen, die dieser Suchlauf zuerst gefunden hat.
+   *
+   * Ohne diesen Filter kann ein Client nicht zeigen, was *diese* Suche
+   * ergeben hat - er sieht nur den ganzen Workspace. Eine Suche nach
+   * "Baufirmen in Linz" lieferte dann eine Liste voller Restaurants aus
+   * frueheren Laeufen, und es sah aus, als haette die Suche versagt.
+   *
+   * `first_seen_run_id`, nicht "zuletzt gesehen": eine Firma, die schon
+   * bekannt war, ist kein neuer Treffer dieses Laufs - sie taucht in der
+   * Historie ohnehin auf.
+   */
+  run_id: z.uuid().optional(),
   order: z.enum(["created_asc", "created_desc"]).default("created_desc"),
 })
 
@@ -50,6 +63,7 @@ export function createCompaniesRouter(options: CompaniesRouterOptions): Router {
       if (query.target_type) filters.push(eq(companies.targetType, query.target_type))
       if (query.has_website === "true") filters.push(sql`${companies.domain} is not null`)
       if (query.has_website === "false") filters.push(sql`${companies.domain} is null`)
+      if (query.run_id) filters.push(eq(companies.firstSeenRunId, query.run_id))
 
       const keyset = query.cursor ? parseCursor(query.cursor) : null
       if (query.cursor && !keyset) {

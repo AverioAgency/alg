@@ -188,6 +188,15 @@ Things that will bite, roughly in order of how expensive the mistake is:
   zurück — um danach jedes Objekt zu verwerfen. Teuerste denkbare Abfrage,
   garantiert leeres Ergebnis, und die Quelle der 504er. Der Adapter sagt jetzt,
   dass er die falsche Quelle ist, statt eine andere Frage zu beantworten.
+- **`supports` ist eine Absichtserklärung, kein Beleg.** Die Registry teilt
+  Filter anhand der statischen Liste in "pushed down" und "nachgelagert" — ob
+  die Quelle den Filter im konkreten Lauf *wirklich* angewandt hat, steht dort
+  nicht. Places nennt `core.geo` als unterstützt, lässt den Ortsbezug bei einem
+  Gebiet über 50 km Bias-Radius aber weg; damit filterte niemand, und eine
+  Österreich-Suche lieferte Treffer aus Neubrandenburg und Pafos. Der
+  Nachfilter läuft deshalb **immer**. Fehlende Felder gelten dabei nicht als
+  Absage: keine Koordinate, aber ein Ländercode entscheidet über das Land, und
+  ohne beides bleibt der Treffer drin — unbelegt ist nicht widerlegt.
 - **Ein Nachfilter, der alles verwirft, sieht aus wie eine leere Gegend.** Der
   Adapter liefert 500 Objekte, `evaluateFilter` verwirft jedes, und der Lauf
   meldet `found: 0` ohne Fehler — ununterscheidbar von "dort gibt es nichts".
