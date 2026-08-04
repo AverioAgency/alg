@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { evaluateFilter } from "../filter-eval.js"
+import { discoveryTimeFilters } from "../run.js"
 
 /**
  * Der Nachfilter entscheidet, welche Firma im Ergebnis landet, und lief bis
@@ -150,5 +151,65 @@ describe("evaluateFilter", () => {
         )
       ).toBe(true)
     })
+  })
+})
+
+describe("discoveryTimeFilters", () => {
+  /**
+   * Der zweite Grund, warum Suchen leer zurueckkamen: "Betriebe ohne Website"
+   * prueft ein Signal, das erst die Anreicherung ermittelt. Zur Discovery-Zeit
+   * fehlt der Wert, der Nachfilter liest das zu Recht als "passt nicht" - und
+   * verwarf damit jeden Treffer, den Google gerade berechnet hatte.
+   */
+  const geo = { op: "within" as const, key: "core.geo", value: { bbox: [48, 14, 49, 15] } }
+  const category = { op: "eq" as const, key: "core.category", value: "restaurant" }
+  const signal = { op: "eq" as const, key: "web.presence.has_website", value: false }
+
+  it("behaelt Kernfelder", () => {
+    expect(discoveryTimeFilters(category)).toEqual(category)
+  })
+
+  it("entfernt einen Signalfilter", () => {
+    expect(discoveryTimeFilters(signal)).toBeNull()
+  })
+
+  it("laesst von einem gemischten AND nur die Kernfelder uebrig", () => {
+    expect(discoveryTimeFilters({ op: "and", children: [category, signal] })).toEqual(category)
+  })
+
+  it("behaelt beide Kernfelder eines AND", () => {
+    expect(discoveryTimeFilters({ op: "and", children: [category, geo, signal] })).toEqual({
+      op: "and",
+      children: [category, geo],
+    })
+  })
+
+  it("gibt null zurueck, wenn nichts Pruefbares uebrig bleibt", () => {
+    // Der Aufrufer filtert dann gar nicht, statt gegen ein leeres AND zu pruefen.
+    expect(discoveryTimeFilters({ op: "and", children: [signal] })).toBeNull()
+  })
+
+  it("laesst die Negation eines Signals ebenfalls fallen", () => {
+    // Nicht pruefbar bleibt nicht pruefbar - "nicht X" ist nicht "trifft zu".
+    expect(discoveryTimeFilters({ op: "not", child: signal })).toBeNull()
+    expect(discoveryTimeFilters({ op: "not", child: category })).toEqual({
+      op: "not",
+      child: category,
+    })
+  })
+
+  it("ein Restaurant ueberlebt den Nachfilter der Wizard-Suche", () => {
+    // Ende zu Ende: genau die Spec, die "0 Treffer" lieferte.
+    const fromGoogle = {
+      "core.name": "Gasthaus Krone",
+      "core.category": ["restaurant"],
+      "core.geo": { lat: 48.3, lon: 14.28 },
+    }
+    const wizardSpec = { op: "and" as const, children: [category, geo, signal] }
+
+    expect(evaluateFilter(wizardSpec, fromGoogle)).toBe(false)
+    const applicable = discoveryTimeFilters(wizardSpec)
+    expect(applicable).not.toBeNull()
+    expect(evaluateFilter(applicable!, fromGoogle)).toBe(true)
   })
 })

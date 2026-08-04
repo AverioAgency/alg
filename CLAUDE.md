@@ -112,6 +112,20 @@ Things that will bite, roughly in order of how expensive the mistake is:
   for; when measuring by hand, query serially (the rate limit is 2) and expect to
   fall back to `overpass.kumi.systems`.
 
+- **Ein Signalfilter darf die Discovery nicht erreichen.** `web.presence.*`
+  entsteht erst bei der Anreicherung; zur Discovery-Zeit fehlt der Wert, und der
+  Nachfilter liest das zu Recht als "passt nicht". Die Suche "Betriebe ohne
+  Website" verwarf damit jeden Treffer, den sie gerade bezahlt hatte.
+  `discoveryTimeFilters()` in `run.ts` schneidet alles ausser `core.*` weg —
+  nach Präfix, nicht gegen eine Liste bekannter Signale, damit ein neuer Provider
+  nicht durch Vergessen hineinrutscht. Die Bedingung greift weiterhin, nur
+  später: Anreicherung füllt, Rubrik bewertet.
+- **Eine Branche, die OSM nicht kennt, ist kein Grund zur offenen Suche.**
+  `toCategoryTags` liefert für `it_services` oder `erp` nichts, der Schlüssel
+  landet in `unsupported`, und die Query fiel auf alle Geschäfte des Bundeslandes
+  zurück — um danach jedes Objekt zu verwerfen. Teuerste denkbare Abfrage,
+  garantiert leeres Ergebnis, und die Quelle der 504er. Der Adapter sagt jetzt,
+  dass er die falsche Quelle ist, statt eine andere Frage zu beantworten.
 - **Ein Nachfilter, der alles verwirft, sieht aus wie eine leere Gegend.** Der
   Adapter liefert 500 Objekte, `evaluateFilter` verwirft jedes, und der Lauf
   meldet `found: 0` ohne Fehler — ununterscheidbar von "dort gibt es nichts".

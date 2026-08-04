@@ -335,6 +335,44 @@ describe("OverpassAdapter resilience", () => {
   })
 })
 
+describe("refusing a branch Overpass does not know", () => {
+  // OSM hat kein Tag fuer "it_services". Ohne diese Pruefung faellt die Query
+  // auf alle Geschaefte des Bundeslandes zurueck, um danach jedes Objekt zu
+  // verwerfen - die teuerste Abfrage mit garantiert leerem Ergebnis, und der
+  // Grund fuer 504er bei null Treffern.
+  const unknownBranch: SearchSpec = {
+    targetType: "local_business",
+    filters: {
+      op: "and",
+      children: [
+        { op: "eq", key: "core.category", value: "it_services" },
+        { op: "within", key: "core.geo", value: { bbox: [48.0, 13.0, 48.7, 14.6] } },
+      ],
+    },
+    limit: 50,
+  }
+
+  it("says so instead of searching everything", async () => {
+    const fetchImpl = fakeFetch("{}")
+    await expect(makeAdapter(fetchImpl).search(unknownBranch)).rejects.toThrow(/Branche/)
+    // Vor allem: es geht keine Abfrage raus.
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it("still allows an open search over a small area", async () => {
+    // Ohne Branchenwunsch bleibt die offene Suche erlaubt - nur eine
+    // *unbekannte* Branche ist ein Fehler.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    await expect(
+      makeAdapter(fetchImpl).search({
+        targetType: "local_business",
+        filters: { op: "within", key: "core.geo", value: { bbox: [48.28, 14.25, 48.33, 14.33] } },
+        limit: 50,
+      })
+    ).resolves.toBeDefined()
+  })
+})
+
 describe("OverpassAdapter.estimateCost", () => {
   it("reports zero cost - Overpass is free", () => {
     const estimate = makeAdapter(fakeFetch("{}")).estimateCost(linzSpec)

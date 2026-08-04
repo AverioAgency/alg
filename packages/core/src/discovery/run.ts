@@ -1,5 +1,12 @@
 import { type Database } from "@alg/db"
-import { type DiscoveryAdapter, type RawEntity, type SearchSpec } from "@alg/shared"
+import {
+  type DiscoveryAdapter,
+  type FilterNode,
+  type RawEntity,
+  type SearchSpec,
+  isBranchNode,
+  isNotNode,
+} from "@alg/shared"
 import { dedupeBatch, toDedupeCandidate } from "./dedupe.js"
 import { evaluateFilter } from "./filter-eval.js"
 import { normalizeEntity, persistEntities, type PersistResult } from "./persist.js"
@@ -111,10 +118,12 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
       const entities = await fetchFromAdapter(adapter, spec, limit - collected.length, options)
 
       // Filters the adapter could not push down are applied here, against the
-      // fields the adapter actually returned.
+      // fields the adapter actually returned - but only those that can be
+      // answered yet (see discoveryTimeFilters).
+      const applicable = discoveryTimeFilters(spec.filters)
       const kept =
-        postFiltered.length > 0
-          ? entities.filter((entity) => evaluateFilter(spec.filters, toFilterValues(entity)))
+        postFiltered.length > 0 && applicable
+          ? entities.filter((entity) => evaluateFilter(applicable, toFilterValues(entity)))
           : entities
 
       collected.push(...kept)
@@ -216,6 +225,60 @@ async function fetchFromAdapter(
  * Flattens an entity into the key space post-filters address. Only core.* keys
  * exist at this stage - signal keys are filled in by the M2 provider layer.
  */
+/**
+ * Entfernt alles aus dem Filterbaum, was zur Discovery-Zeit noch nicht existiert.
+ *
+ * Ein Signalfilter (`web.presence.has_website`, `legal.impressum.*`) beschreibt
+ * eine Eigenschaft, die erst die Anreicherung ermittelt - der Adapter liefert
+ * Kernfelder und sonst nichts. Der Nachfilter bewertet einen fehlenden Wert
+ * jedoch als "passt nicht", und zwar zu Recht: sonst wuerde ein nie gemessenes
+ * Signal als erfuellt durchgehen.
+ *
+ * Beides zusammen hiess: die Suche "Betriebe ohne Website" verwarf jeden
+ * einzelnen Treffer, den sie gerade bezahlt hatte, und meldete null - ohne
+ * Fehler, nicht zu unterscheiden von einer leeren Gegend. Der Filter war nicht
+ * falsch, er war nur zu frueh dran.
+ *
+ * Signalbedingungen greifen weiterhin, nur spaeter: die Anreicherung fuellt sie,
+ * die Rubrik bewertet sie. Hier bleiben sie aussen vor.
+ *
+ * Ein Knoten, von dem nichts uebrig bleibt, wird zu `null` - der Aufrufer
+ * filtert dann gar nicht, statt gegen einen leeren AND-Knoten zu pruefen.
+ */
+export function discoveryTimeFilters(node: FilterNode | undefined): FilterNode | null {
+  if (!node) return null
+
+  if (isBranchNode(node)) {
+    const children = node.children
+      .map((child) => discoveryTimeFilters(child))
+      .filter((child): child is FilterNode => child !== null)
+
+    if (children.length === 0) return null
+    if (children.length === 1) return children[0] ?? null
+    return { ...node, children }
+  }
+
+  if (isNotNode(node)) {
+    const child = discoveryTimeFilters(node.child)
+    // Die Negation einer Bedingung, die wir nicht pruefen koennen, ist selbst
+    // nicht pruefbar - und nicht etwa "trifft zu".
+    return child === null ? null : { ...node, child }
+  }
+
+  return isCoreKey(node.key) ? node : null
+}
+
+/**
+ * Kernfelder liefert jeder Adapter direkt; alles andere entsteht spaeter.
+ *
+ * Bewusst nach Praefix statt gegen eine Liste bekannter Signale: ein neuer
+ * Provider bringt neue Schluessel mit, und die duerfen nicht dadurch in die
+ * Discovery geraten, dass jemand vergisst, sie hier einzutragen.
+ */
+function isCoreKey(key: string): boolean {
+  return key.startsWith("core.")
+}
+
 function toFilterValues(entity: RawEntity): Record<string, unknown> {
   const values: Record<string, unknown> = {
     "core.name": entity.name,

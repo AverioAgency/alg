@@ -206,6 +206,30 @@ export class OverpassAdapter implements DiscoveryAdapter {
      * Frueh und mit einem umsetzbaren Hinweis zu scheitern ist deutlich besser
      * als eine lange Wartezeit auf eine leere Liste.
      */
+    /**
+     * Eine Kategorie, die Overpass nicht kennt, ist kein Grund zur offenen Suche.
+     *
+     * `toCategoryTags` liefert fuer "it_services" oder "erp" nichts - solche
+     * Betriebe tragen in OSM kein passendes Tag. Der Schluessel landet dann in
+     * `unsupported` und die Query faellt auf ALL_BUSINESS_SELECTORS zurueck.
+     * Damit fragt der Adapter *alle* Geschaefte eines Bundeslandes ab, um
+     * anschliessend nachgelagert jedes Objekt zu verwerfen, weil keines
+     * "it_services" ist: die teuerste denkbare Abfrage mit garantiert leerem
+     * Ergebnis. Genau so entstanden die 504er bei null Treffern.
+     *
+     * Der Nutzer hat nach einer Branche gefragt. Sie hier stillschweigend
+     * fallenzulassen, beantwortet eine andere Frage - also sagen wir, dass
+     * Overpass die falsche Quelle ist, und ueberlassen die Suche den Adaptern,
+     * die Freitext koennen (Google Places).
+     */
+    if (plan.categoryFilters.length === 0 && plan.unsupported.includes("core.category")) {
+      throw new Error(
+        "Overpass kennt diese Branche nicht - OpenStreetMap hat dafür kein Tag. " +
+          "Diese Suche braucht eine Quelle mit Freitextsuche (Google Places) " +
+          "oder eine Branche aus der Kategorienliste."
+      )
+    }
+
     if (plan.categoryFilters.length === 0 && plan.area.bbox) {
       const [south = 0, west = 0, north = 0, east = 0] = plan.area.bbox
       const squareDegrees = Math.abs(north - south) * Math.abs(east - west)
