@@ -112,6 +112,25 @@ Things that will bite, roughly in order of how expensive the mistake is:
   for; when measuring by hand, query serially (the rate limit is 2) and expect to
   fall back to `overpass.kumi.systems`.
 
+- **Ein Nachfilter, der alles verwirft, sieht aus wie eine leere Gegend.** Der
+  Adapter liefert 500 Objekte, `evaluateFilter` verwirft jedes, und der Lauf
+  meldet `found: 0` ohne Fehler — ununterscheidbar von "dort gibt es nichts".
+  Genau das passierte, weil `core.category` mehrwertig ist (ein Lokal ist
+  restaurant *und* cafe), der Nutzerfilter aber einwertig, und `looseEquals`
+  den Array-Fall nicht kannte. `evaluateFilter` hatte trotz dieser Stellung
+  keinen einzigen Test. Der Lauf berichtet jetzt `returned` neben `found` — die
+  Differenz benennt sofort, ob die Quelle oder der Filter schuld ist.
+- **Auf dem Server läuft `./infra/alg.sh`, nicht `docker compose`.** ALG braucht
+  zwei Compose-Dateien; die zweite hängt die Container ins Supabase-Netz. Fehlt
+  sie, ist der Fehler nicht "Netzwerk fehlt", sondern `getaddrinfo EAI_AGAIN`
+  und HTTP 500 auf jeder Route mit Datenbankzugriff, während `/health` und
+  `/docs` weiterlaufen — es sieht nach einem Anwendungsfehler aus und ist
+  keiner. `export COMPOSE_FILE=...` überlebt keinen Reconnect, das Skript schon.
+- **Jeder neue Auth-Header gehört in `REDACT_PATHS`.** `x-alg-service-token`
+  stand im Klartext in jeder Zeile des Request-Logs, weil die Liste nur
+  `x-supabase-token` kannte — und pino-http loggt Header vollständig. Ein Log
+  wandert weiter als der Prozess, der es schreibt (aufgefallen ist es, als ein
+  Fehlerlog zum Debuggen weitergereicht wurde).
 - **Never create RLS policies.** Supabase is used as a plain Postgres. There is no
   anon key in circulation and the frontend never talks to the database. All
   authorization happens in the API layer. An RLS policy here would give false

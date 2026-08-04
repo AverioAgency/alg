@@ -16,7 +16,14 @@ import { type DiscoveryRegistry } from "./registry.js"
 
 export type ProgressEvent =
   | { type: "adapter_started"; adapterId: string }
-  | { type: "adapter_finished"; adapterId: string; found: number; costEur: number }
+  | {
+      type: "adapter_finished"
+      adapterId: string
+      /** Was die Quelle lieferte, vor den Nachfiltern. */
+      returned: number
+      found: number
+      costEur: number
+    }
   | { type: "adapter_failed"; adapterId: string; reason: string }
   | { type: "progress"; found: number; persisted: number }
 
@@ -38,7 +45,22 @@ export interface RunDiscoveryResult {
   created: number
   duplicates: number
   costEur: number
-  adapters: { adapterId: string; found: number; costEur: number; error?: string }[]
+  /**
+   * Pro Adapter, und zwar mit beiden Zahlen.
+   *
+   * `returned` ist, was die Quelle geliefert hat, `found` was nach den
+   * Nachfiltern uebrig blieb. Ohne die Unterscheidung sieht "Overpass kennt
+   * dieses Gebiet nicht" genauso aus wie "500 Treffer, alle vom Filter
+   * verworfen" - beides stand als found: 0 im Lauf, und die Diagnose begann
+   * jedesmal bei null. Die Differenz benennt den Schuldigen sofort.
+   */
+  adapters: {
+    adapterId: string
+    returned: number
+    found: number
+    costEur: number
+    error?: string
+  }[]
   outcomes: PersistResult["outcomes"]
 }
 
@@ -75,6 +97,7 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
       // a paid API still costs the same as a whole one.
       result.adapters.push({
         adapterId: adapter.id,
+        returned: 0,
         found: 0,
         costEur: 0,
         error: "budget_exceeded",
@@ -99,6 +122,7 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
       result.costEur += estimate.estimatedCostEur
       result.adapters.push({
         adapterId: adapter.id,
+        returned: entities.length,
         found: kept.length,
         costEur: estimate.estimatedCostEur,
       })
@@ -106,13 +130,20 @@ export async function runDiscovery(options: RunDiscoveryOptions): Promise<RunDis
       await options.onProgress?.({
         type: "adapter_finished",
         adapterId: adapter.id,
+        returned: entities.length,
         found: kept.length,
         costEur: estimate.estimatedCostEur,
       })
     } catch (error) {
       // One failing source must not lose the results of the others.
       const reason = error instanceof Error ? error.message : String(error)
-      result.adapters.push({ adapterId: adapter.id, found: 0, costEur: 0, error: reason })
+      result.adapters.push({
+        adapterId: adapter.id,
+        returned: 0,
+        found: 0,
+        costEur: 0,
+        error: reason,
+      })
       await options.onProgress?.({ type: "adapter_failed", adapterId: adapter.id, reason })
     }
   }
