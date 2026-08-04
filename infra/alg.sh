@@ -33,12 +33,43 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+read_env() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2- || true; }
+
 files=(-f infra/docker-compose.yml)
 
-# Das Override kommt nur dazu, wenn eine Supabase-Instanz benannt ist. Lokal
-# (Profil local-db) gibt es kein solches Netz, und ein `external: true` auf ein
-# nicht existierendes Netz laesst compose fehlschlagen.
-supabase_network="$(grep -E '^SUPABASE_NETWORK=' .env | tail -n1 | cut -d= -f2- || true)"
+supabase_network="$(read_env SUPABASE_NETWORK)"
+database_url="$(read_env DATABASE_URL)"
+
+# Der Host aus der DATABASE_URL. Ist er weder localhost noch eine Domain,
+# sondern ein blosser Container-Name, dann liegt die Datenbank in einem fremden
+# Docker-Netz - und ohne das Override ist sie nicht aufloesbar.
+db_host="$(printf '%s' "${database_url}" | sed -E 's#^[a-z]+://[^@]*@([^:/?]+).*#\1#')"
+
+needs_external_network=false
+case "${db_host}" in
+  "" | localhost | 127.0.0.1 | postgres | *.* ) ;;
+  *) needs_external_network=true ;;
+esac
+
+if [[ -z "${supabase_network}" && "${needs_external_network}" == true ]]; then
+  # Der frueher hier stehende stille Rueckfall auf "kein Override" war genau
+  # der Fehler, den dieses Skript verhindern soll: DATABASE_URL zeigt auf einen
+  # Container-Namen, also *muss* ALG in dessen Netz - eine fehlende Zeile in der
+  # .env ist ein unvollstaendiges Setup, keine lokale Entwicklung.
+  echo "alg.sh: DATABASE_URL zeigt auf den Container \"${db_host}\", aber" >&2
+  echo "        SUPABASE_NETWORK fehlt in der .env. Ohne diesen Eintrag starten" >&2
+  echo "        die Container ohne das Netz der Datenbank und jede Route mit" >&2
+  echo "        Datenbankzugriff antwortet mit HTTP 500 (getaddrinfo EAI_AGAIN)." >&2
+  echo "" >&2
+  echo "        Passendes Netz suchen und eintragen:" >&2
+  echo "          docker network ls | grep -iE 'sb-|supabase'" >&2
+  echo "          echo 'SUPABASE_NETWORK=<name>' >> /opt/alg/.env" >&2
+  echo "" >&2
+  echo "        Vorhandene Kandidaten:" >&2
+  docker network ls --format '          {{.Name}}' | grep -iE 'sb-|supabase' >&2 ||
+    echo "          (keine gefunden - laeuft die Datenbank auf diesem Host?)" >&2
+  exit 1
+fi
 
 if [[ -n "${supabase_network}" ]]; then
   if ! docker network inspect "${supabase_network}" >/dev/null 2>&1; then
@@ -46,7 +77,7 @@ if [[ -n "${supabase_network}" ]]; then
     # scheinbar sauber und faellt erst beim ersten Datenbankzugriff um.
     echo "alg.sh: SUPABASE_NETWORK=${supabase_network} existiert nicht." >&2
     echo "        Vorhandene Kandidaten:" >&2
-    docker network ls --format '          {{.Name}}' | grep -E 'sb-|supabase' >&2 || \
+    docker network ls --format '          {{.Name}}' | grep -iE 'sb-|supabase' >&2 ||
       echo "          (keine gefunden)" >&2
     exit 1
   fi
