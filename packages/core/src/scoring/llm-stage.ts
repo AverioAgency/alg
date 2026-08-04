@@ -36,8 +36,13 @@ const ASSESSMENT_SCHEMA = {
       description:
         "In German: the strongest reason this lead might be a waste of time. Never leave empty - if there is no risk, say so explicitly.",
     },
+    disqualified: {
+      type: "boolean",
+      description:
+        "true only when the company plainly is not what was searched for - wrong industry, wrong kind of business. Not for a merely weak lead: that is what a low score is for.",
+    },
   },
-  required: ["score", "reasoning", "best_angle", "risk"],
+  required: ["score", "reasoning", "best_angle", "risk", "disqualified"],
   additionalProperties: false,
 } as const
 
@@ -52,6 +57,10 @@ const SYSTEM_PROMPT = [
   "- Ein fehlendes Signal ist kein negatives Signal. Wenn zu wenig bekannt ist, um",
   "  zu urteilen, vergib einen mittleren Wert und schreibe das in die Begründung.",
   "- Begründe mit konkreten Signalen, nicht mit Branchenklischees.",
+  "- disqualified=true nur, wenn das Unternehmen erkennbar nicht das ist, wonach",
+  "  gesucht wurde - falsche Branche, falsche Art von Betrieb. Ein Restaurant in",
+  "  einer Suche nach Elektrotechnik gehört nicht in die Liste, egal wie gut",
+  "  seine Website ist. Für einen bloß schwachen Lead gibt es die Punktzahl.",
   "- Antworte auf Deutsch.",
 ].join("\n")
 

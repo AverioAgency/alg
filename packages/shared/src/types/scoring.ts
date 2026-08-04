@@ -55,6 +55,19 @@ export const LlmAssessmentSchema = z.object({
   reasoning: z.string(),
   best_angle: z.string(),
   risk: z.string(),
+  /**
+   * Der Lead gehoert gar nicht in die Liste.
+   *
+   * Ohne dieses Feld konnte die LLM-Stufe nur Punkte abziehen: sie stellte
+   * fest "Izakaya ist ein japanisches Restaurant, keine Elektronikfirma - ein
+   * disqualifizierendes Merkmal", vergab 5 von 100 Punkten, und der Lead stand
+   * trotzdem in der Liste, weil die Regelkriterien (Website da, erreichbar,
+   * HTTPS) ihn ueber die Schwelle hoben. Die staerkste Aussage, die das Modell
+   * treffen kann, war die schwaechste, die es ausdruecken durfte.
+   *
+   * Optional, damit aeltere gespeicherte Bewertungen weiter lesbar bleiben.
+   */
+  disqualified: z.boolean().optional(),
 })
 
 export type LlmAssessment = z.infer<typeof LlmAssessmentSchema>

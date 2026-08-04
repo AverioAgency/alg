@@ -75,6 +75,11 @@ const SYSTEM_PROMPT = [
   "  Großhändler suchen im selben Gebiet völlig verschiedene Betriebe.",
   "- Steht ein <nicht_filterbar>-Block dabei, gehören diese Punkte in llm_prompt.",
   "  Sie sind der Grund, warum es die LLM-Stufe gibt.",
+  "- Nennt die Beschreibung eine Branche, gehört sie IMMER auch in llm_prompt,",
+  "  mit llm_weight >= 20. Keine Quelle kann eine Branche zuverlässig vorfiltern:",
+  "  eine Suche nach Elektrotechnik liefert Restaurants mit, und nur die",
+  "  LLM-Stufe kann sie aussortieren. Formuliere sie als Frage, die ein klares",
+  "  Nein erlaubt - 'Ist das ein Betrieb der Elektrotechnik?'.",
 ].join("\n")
 
 function buildSchema(catalog: readonly SignalDef[]): Record<string, unknown> {

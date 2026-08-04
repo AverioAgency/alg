@@ -62,10 +62,27 @@ export function evaluateRubric(options: EvaluateOptions): LeadScore {
     if (criterion.weight > 0) maxPossible += criterion.weight
   }
 
-  // The LLM stage contributes on the same 0..100 scale as the rules, weighted
-  // by how much the rubric says it should count.
+  /**
+   * Die LLM-Stufe darf ausschliessen, nicht nur abwerten.
+   *
+   * Vorher ging ihr Urteil ausschliesslich als gewichteter Zuschlag ein. Das
+   * Modell stellte fest "Izakaya ist ein japanisches Restaurant, keine
+   * Elektronikfirma - ein disqualifizierendes Merkmal", vergab 5 von 100
+   * Punkten, und der Lead stand trotzdem in der Liste: die Regelkriterien
+   * (Website da, erreichbar, HTTPS) hatten ihn laengst ueber die Schwelle
+   * gehoben. Die staerkste Aussage, die das Modell treffen kann, war die
+   * schwaechste, die es ausdruecken durfte.
+   *
+   * Wie bei einem harten Regelkriterium: raus heisst raus. Die Begruendung
+   * bleibt in `llm` erhalten, damit nachvollziehbar ist, warum.
+   *
+   * Nur wenn die Rubrik der Stufe ueberhaupt Gewicht gibt - wer sie auf 0
+   * setzt, will kein LLM-Urteil, auch kein ausschliessendes.
+   */
   const llmWeight = (rubric.llmCriteria ?? []).reduce((sum, c) => sum + c.weight, 0)
   if (options.llm && llmWeight > 0) {
+    if (options.llm.disqualified) excluded = true
+
     const llmScore = Math.max(0, Math.min(100, options.llm.score))
     raw += (llmScore / 100) * llmWeight
     maxPossible += llmWeight

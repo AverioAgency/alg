@@ -270,6 +270,68 @@ describe("evaluateRubric - LLM stage", () => {
     expect(pessimistic.total).toBeLessThan(optimistic.total)
   })
 
+  it("lets the LLM stage exclude a lead outright, not merely discount it", () => {
+    /**
+     * Der Fall aus der Produktion: das Modell schrieb "Izakaya ist ein
+     * japanisches Restaurant, keine Elektronikfirma - ein disqualifizierendes
+     * Merkmal" und vergab 5 Punkte. Der Lead stand trotzdem in der Liste, weil
+     * die Regelkriterien (Website da, erreichbar, HTTPS) ihn ueber die Schwelle
+     * gehoben hatten. Die staerkste Aussage des Modells war die schwaechste,
+     * die es ausdruecken durfte.
+     */
+    const goodOnPaper = {
+      "web.presence.reachable": true,
+      "web.techstack.cms": "TYPO3",
+      "web.features.mobile_ready": true,
+      "web.techstack.has_tracking": true,
+      "web.features.structured_data": true,
+    }
+
+    const wrongIndustry = evaluateRubric({
+      signals: goodOnPaper,
+      rubric: ERP_REPLACEMENT_RUBRIC,
+      llm: {
+        score: 5,
+        reasoning: "Japanisches Restaurant, keine Elektronikfirma.",
+        best_angle: "-",
+        risk: "Falsche Branche",
+        disqualified: true,
+      },
+    })
+
+    expect(wrongIndustry.qualified).toBe(false)
+    expect(wrongIndustry.total).toBe(0)
+    // Die Begruendung bleibt erhalten - der Nutzer soll sehen, warum.
+    expect(wrongIndustry.llm?.reasoning).toContain("Restaurant")
+  })
+
+  it("still counts a low score as a low score, not an exclusion", () => {
+    // disqualified ist fuer "gehoert nicht in die Liste", nicht fuer "schwach".
+    const score = evaluateRubric({
+      signals: { "web.presence.reachable": true, "web.techstack.cms": "TYPO3" },
+      rubric: ERP_REPLACEMENT_RUBRIC,
+      llm: { score: 5, reasoning: "Schwach", best_angle: "x", risk: "y", disqualified: false },
+    })
+
+    expect(score.total).toBeGreaterThan(0)
+  })
+
+  it("ignores an exclusion when the rubric gives the stage no weight", () => {
+    // Wer die LLM-Stufe auf 0 gewichtet, will kein LLM-Urteil - auch kein
+    // ausschliessendes. Sonst waere das Gewicht keine Entscheidung mehr.
+    const noLlmWeight = {
+      ...ERP_REPLACEMENT_RUBRIC,
+      llmCriteria: [],
+    }
+    const score = evaluateRubric({
+      signals: { "web.presence.reachable": true, "web.techstack.cms": "TYPO3" },
+      rubric: noLlmWeight,
+      llm: { score: 5, reasoning: "-", best_angle: "-", risk: "-", disqualified: true },
+    })
+
+    expect(score.total).toBeGreaterThan(0)
+  })
+
   it("leaves llm null when no key is configured", () => {
     // The documented behaviour without an Anthropic key: rule-only scoring.
     const score = evaluateRubric({

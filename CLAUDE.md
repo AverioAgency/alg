@@ -145,6 +145,15 @@ Things that will bite, roughly in order of how expensive the mistake is:
   gemessen") und jeder Lead bekommt 0 Punkte. Die Rubrik mitzuschicken ist der
   richtige Weg: der Planer leitet daraus ab, welche Provider laufen müssen —
   eine feste Signalliste im Client veraltet bei der ersten Rubrikänderung.
+- **Die LLM-Stufe darf ausschließen, nicht nur abwerten.** Sie schrieb "Izakaya
+  ist ein japanisches Restaurant, keine Elektronikfirma — ein disqualifizierendes
+  Merkmal", vergab 5 von 100 Punkten, und der Lead stand trotzdem in der Liste:
+  die Regelkriterien (Website da, erreichbar, HTTPS) hatten ihn längst über die
+  Schwelle gehoben. Die stärkste Aussage des Modells war die schwächste, die es
+  ausdrücken durfte. `disqualified: true` wirkt jetzt wie ein hartes
+  Regelkriterium — aber nur, wenn die Rubrik der Stufe Gewicht gibt, sonst wäre
+  das Gewicht keine Entscheidung mehr. Eine Branche gehört deshalb **immer**
+  auch in `llmCriteria`: keine Quelle filtert sie zuverlässig vor.
 - **Eine leere Rubrik schaltet auch die Datenbeschaffung ab.** Weil die
   Anreicherung bedarfsgetrieben läuft, startet ein Provider nur, wenn etwas
   seine Signale referenziert. `criteria: []` heißt deshalb nicht nur "kein
