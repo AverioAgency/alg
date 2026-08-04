@@ -1232,6 +1232,13 @@ export function openApiDocument(version: string): Record<string, unknown> {
                   required: ["description"],
                   properties: {
                     description: { type: "string", minLength: 10, maxLength: 4000 },
+                    additional_criteria: {
+                      type: "array",
+                      items: { type: "string", maxLength: 300 },
+                      maxItems: 10,
+                      description:
+                        "Wishes no source can filter (headcount, revenue), taken from the search text. They become an LLM criterion instead of being dropped.",
+                    },
                     target_type: {
                       type: "string",
                       enum: ["local_business", "company", "person", "list"],

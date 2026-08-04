@@ -301,6 +301,51 @@ function collectKeys(node: FilterNode): Set<string> {
   return keys
 }
 
+/** Die Regionen, die eine Suche kennt - fuer den Suchtext-Parser. */
+export const KNOWN_REGIONS: string[] = Object.keys(REGION_BBOX)
+
+/**
+ * Uebernimmt, was aus dem Suchtext gelesen wurde.
+ *
+ * Vorher landete die Beschreibung in einem Feld und wurde nie wieder gelesen:
+ * wer "Baufirmen in Linz" eintippte, wurde anschliessend gefragt, in welcher
+ * Region er suchen wolle. Das wirkte, als haette niemand zugehoert.
+ *
+ * Der Ort ist genauer als die Region und kommt zusaetzlich dazu - "Linz"
+ * heisst Oberoesterreich *und* core.city=Linz, sonst waere das halbe
+ * Bundesland im Ergebnis.
+ */
+export function applyInterpretation(
+  state: ClarifyState,
+  interpreted: {
+    region: string | null
+    city: string | null
+    categories: string[]
+    limit: number | null
+  }
+): ClarifyState {
+  let current = state
+
+  if (interpreted.region) {
+    current = applyAnswer(current, { questionId: "region", value: interpreted.region })
+  }
+  if (interpreted.categories.length > 0) {
+    current = applyAnswer(current, { questionId: "category", value: interpreted.categories })
+  }
+  if (interpreted.limit) {
+    current = applyAnswer(current, { questionId: "limit", value: interpreted.limit })
+  }
+  if (interpreted.city) {
+    // Eine Ziffernfolge ist eine PLZ. Als Ortsname gesucht faende sie nichts.
+    const leaf = /^\d{4,5}$/.test(interpreted.city)
+      ? { op: "eq" as const, key: "core.postal_code", value: interpreted.city }
+      : { op: "contains" as const, key: "core.city", value: interpreted.city }
+    current = { ...current, spec: withFilter(current.spec, leaf) }
+  }
+
+  return current
+}
+
 /** A fresh state for a description the user typed. */
 export function startClarification(
   description: string,

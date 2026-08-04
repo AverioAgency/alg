@@ -10,7 +10,12 @@ import {
   nextQuestions,
   planSignals,
   playbookBySlug,
+  applyInterpretation,
+  interpretSearch,
+  KNOWN_REGIONS,
   startClarification,
+  type InterpretedSearch,
+  type LlmClient,
   PLAYBOOKS,
   type ClarifyState,
   type SignalRegistry,
@@ -21,12 +26,15 @@ import {
   RubricSchema,
   SearchSpecSchema,
   OnboardingProfileSchema,
+  categoriesFor,
+  type TargetType,
   decodeSearchSpec,
   encodeSearchSpecToQuery,
   isOnboardingComplete,
   type OnboardingProfile,
 } from "@alg/shared"
 import { requireContext } from "../middleware/auth.js"
+import { loadOnboardingProfile } from "./onboarding-profile.js"
 
 /**
  * The clarification flow: draft -> answer -> preview -> run.
@@ -73,6 +81,14 @@ const OnboardingPatchSchema = z.object({
 export interface ClarifyRouterOptions {
   db: Database
   registry: SignalRegistry
+  /**
+   * Optional: ohne Schluessel liest niemand den Suchtext.
+   *
+   * Der Assistent fragt dann wie bisher nach Region und Branche - unbequemer,
+   * aber vollstaendig funktionsfaehig. Ein fehlender Schluessel ist ein
+   * unvollstaendiges Deployment, kein Defekt.
+   */
+  llmClient?: LlmClient | null
 }
 
 export function createClarifyRouter(options: ClarifyRouterOptions): Router {
@@ -88,8 +104,16 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
     try {
       const ctx = requireContext(req)
       const body = DraftSchema.parse(req.body ?? {})
-      const profile = await loadOnboarding(ctx, options.db)
-      const state = buildState(body, profile)
+      const profile = await loadOnboardingProfile(ctx, options.db)
+      // Zuerst lesen, was dasteht - sonst fragt der Assistent nach der Region,
+      // die der Nutzer gerade getippt hat.
+      const interpreted = await interpretIfPossible(
+        body.description,
+        body.target_type,
+        profile,
+        options.llmClient ?? null
+      )
+      const state = buildState(body, profile, interpreted)
 
       const questions = nextQuestions(state)
 
@@ -99,6 +123,11 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
         questions: questions.map(toQuestionResponse),
         spec: state.spec,
         answers: state.answers,
+        // Was aus dem Freitext gelesen wurde. Der Nutzer soll sehen, ob er
+        // richtig verstanden wurde, bevor die Suche laeuft.
+        interpretation: interpreted
+          ? { summary: interpreted.summary, for_rubric: interpreted.forRubric }
+          : null,
         // False means the search cannot run yet - it has no geographic
         // constraint, and Overpass refuses outright without one.
         runnable: isRunnable(state.spec),
@@ -123,8 +152,14 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
       const ctx = requireContext(req)
       const body = PreviewSchema.parse(req.body ?? {})
 
-      const profile = await loadOnboarding(ctx, options.db)
-      let state = buildState(body, profile)
+      const profile = await loadOnboardingProfile(ctx, options.db)
+      const interpreted = await interpretIfPossible(
+        body.description,
+        body.target_type,
+        profile,
+        options.llmClient ?? null
+      )
+      let state = buildState(body, profile, interpreted)
       if (body.fill_defaults) state = applyDefaults(state)
 
       const plan = planSignals({ spec: state.spec, rubric: body.rubric ?? null }, options.registry)
@@ -135,11 +170,16 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
       res.json({
         spec: state.spec,
         runnable: isRunnable(state.spec),
+        // Geht als additionalCriteria in die Rubrik: Wuensche, die keine Quelle
+        // filtern kann, pruef die LLM-Stufe pro Lead.
+        interpretation: interpreted
+          ? { summary: interpreted.summary, for_rubric: interpreted.forRubric }
+          : null,
         // The shareable URL for this search, so a preview can be sent to a
         // colleague before it is run.
         share_query: encodeSearchSpecToQuery(state.spec),
         applied_defaults: body.fill_defaults
-          ? nextQuestions(buildState(body, profile))
+          ? nextQuestions(buildState(body, profile, interpreted))
               .filter((question) => question.defaultValue !== null)
               .map((question) => ({ question_id: question.id, value: question.defaultValue }))
           : [],
@@ -201,7 +241,7 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
   router.get("/onboarding", async (req: Request, res: Response, next: NextFunction) => {
     try {
       const ctx = requireContext(req)
-      const profile = await loadOnboarding(ctx, options.db)
+      const profile = await loadOnboardingProfile(ctx, options.db)
 
       res.json({
         profile,
@@ -227,7 +267,7 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
     try {
       const ctx = requireContext(req)
       const body = OnboardingPatchSchema.parse(req.body ?? {})
-      const existing = await loadOnboarding(ctx, options.db)
+      const existing = await loadOnboardingProfile(ctx, options.db)
 
       const merged: OnboardingProfile = {
         ...existing,
@@ -415,27 +455,7 @@ export function createClarifyRouter(options: ClarifyRouterOptions): Router {
  * that no longer parses is treated as absent, because pre-filling a search from
  * a shape nobody checked is worse than asking one question again.
  */
-async function loadOnboarding(
-  ctx: Parameters<typeof withWorkspace>[0],
-  db: Database
-): Promise<OnboardingProfile | null> {
-  const rows = await withWorkspace(
-    ctx,
-    async ({ tx }) =>
-      tx
-        .select({ onboarding: workspaces.onboarding })
-        .from(workspaces)
-        .where(eq(workspaces.id, ctx.workspaceId))
-        .limit(1),
-    db
-  )
 
-  const raw = rows[0]?.onboarding
-  if (raw === null || raw === undefined) return null
-
-  const parsed = OnboardingProfileSchema.safeParse(raw)
-  return parsed.success ? parsed.data : null
-}
 
 async function saveOnboarding(
   ctx: Parameters<typeof withWorkspace>[0],
@@ -465,17 +485,50 @@ function buildState(
     // Already narrowed to the accepted union by AnswerSchema.
     answers: { question_id: string; value: string | string[] | number | boolean | null }[]
   },
-  profile?: OnboardingProfile | null
+  profile?: OnboardingProfile | null,
+  interpreted?: InterpretedSearch | null
 ): ClarifyState {
   // The profile seeds the state before the user's own answers, so an explicit
   // answer this time always wins over what onboarding recorded.
   let state = startClarification(body.description, body.target_type, profile)
+
+  // Dann, was im Suchtext selbst stand: praeziser als das Profil, weil es
+  // dieses Mal gemeint ist.
+  if (interpreted) state = applyInterpretation(state, interpreted)
 
   for (const answer of body.answers) {
     state = applyAnswer(state, { questionId: answer.question_id, value: answer.value })
   }
 
   return state
+}
+
+/**
+ * Liest den Suchtext, wenn ein Modell verfuegbar ist.
+ *
+ * Ohne Schluessel oder bei einem Fehler: null, und der Assistent fragt wie
+ * bisher nach. Ein ausgefallener Modellaufruf darf keine Suche verhindern -
+ * er macht sie nur weniger bequem.
+ */
+async function interpretIfPossible(
+  description: string,
+  targetType: TargetType,
+  registryProfile: OnboardingProfile | null,
+  client: LlmClient | null
+): Promise<InterpretedSearch | null> {
+  if (!client || description.trim().length < 3) return null
+
+  try {
+    return await interpretSearch({
+      client,
+      description,
+      categories: categoriesFor(targetType),
+      regions: KNOWN_REGIONS,
+      profile: registryProfile,
+    })
+  } catch {
+    return null
+  }
 }
 
 function toQuestionResponse(question: ReturnType<typeof nextQuestions>[number]) {

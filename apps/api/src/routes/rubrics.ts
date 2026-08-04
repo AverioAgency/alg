@@ -21,6 +21,7 @@ import {
   type Rubric,
 } from "@alg/shared"
 import { requireContext } from "../middleware/auth.js"
+import { loadOnboardingProfile } from "./onboarding-profile.js"
 
 /**
  * Rubric CRUD, scoring runs and calibration.
@@ -57,6 +58,12 @@ const ListQuerySchema = z.object({
 const SuggestSchema = z.object({
   description: z.string().min(10).max(4000),
   target_type: TargetTypeSchema.default("company"),
+  /**
+   * Wuensche, die keine Quelle filtern kann - aus der Interpretation des
+   * Suchtexts ("unter 50 Mitarbeiter"). Sie werden zu einem LLM-Kriterium,
+   * statt unter den Tisch zu fallen.
+   */
+  additional_criteria: z.array(z.string().min(1).max(300)).max(10).optional(),
 })
 
 const ScoreRequestSchema = z.object({
@@ -127,7 +134,7 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
    */
   router.post("/rubrics/suggest", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      requireContext(req)
+      const ctx = requireContext(req)
       const body = SuggestSchema.parse(req.body ?? {})
 
       if (!options.llmClient) {
@@ -139,10 +146,17 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
       const catalog = options.registry.signalDefs(body.target_type)
 
       try {
+        // Das Onboarding-Profil geht mit: ohne den Kontext entwirft das Modell
+        // eine Rubrik fuer "gute Firmen im Allgemeinen" statt fuer "Firmen, die
+        // zu diesem Angebot passen" - und das ist die eigentliche Frage.
+        const profile = await loadOnboardingProfile(ctx, options.db)
+
         const result = await suggestRubric({
           client: options.llmClient,
           description: body.description,
           catalog,
+          profile,
+          ...(body.additional_criteria ? { additionalCriteria: body.additional_criteria } : {}),
         })
 
         res.json({

@@ -202,7 +202,7 @@ export function createApp(options: AppOptions): Express {
 
   // Stateless: the client sends the description and answers, the server computes
   // the questions. No draft table and no half-finished wizards left behind.
-  app.use("/v1", createClarifyRouter({ db, registry: signalRegistry }))
+  app.use("/v1", createClarifyRouter({ db, registry: signalRegistry, llmClient }))
 
   app.use(notFoundHandler)
   app.use(createErrorHandler(logger))

@@ -168,3 +168,5 @@ export {
   type ClarifyState,
   type QuestionType,
 } from "./clarify/questions.js"
+export { applyInterpretation, KNOWN_REGIONS } from "./clarify/questions.js"
+export { interpretSearch, type InterpretedSearch } from "./clarify/interpret.js"

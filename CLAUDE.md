@@ -125,6 +125,18 @@ Things that will bite, roughly in order of how expensive the mistake is:
   `PLACES_CATEGORY_QUERY` ging `car_repair` wörtlich an Google, das dann nach
   dieser Zeichenkette suchte und Einzeltreffer lieferte statt einer vollen
   Seite. Ein Test prüft, dass kein Slug mit Unterstrich die API erreicht.
+- **Der Suchtext ist Eingabe, nicht Dekoration.** Die Beschreibung landete in
+  einem Feld und wurde nie gelesen — wer "Baufirmen in Linz" eintippte, wurde
+  danach gefragt, in welcher Region er suchen wolle. `interpretSearch()` liest
+  daraus Region, Ort, Branche und Limit; was keine Quelle filtern kann
+  (Mitarbeiterzahl, Umsatz) geht als `forRubric` an die LLM-Stufe, statt
+  stillschweigend zu verschwinden. Ohne `ANTHROPIC_API_KEY` fragt der Assistent
+  wie bisher nach — unbequemer, aber vollständig funktionsfähig.
+- **Ohne Onboarding-Kontext entwirft die KI die falsche Rubrik.** `suggestRubric`
+  bekommt jetzt `profile`: ohne zu wissen, wer sucht und was er verkauft, bewertet
+  das Modell "gute Firma im Allgemeinen" statt "passt zu diesem Anbieter". Eine
+  Werbeagentur und ein Großhändler suchen im selben Gebiet völlig verschiedene
+  Betriebe.
 - **Bewerten reichert nicht an.** `POST /rubrics/:id/score` liest die
   `enrichments`-Tabelle, mehr nicht — und das ist richtig so, denn Anreicherung
   kostet Zeit und teils Geld und gehört nicht stillschweigend in eine

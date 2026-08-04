@@ -1,4 +1,10 @@
-import { OperatorSchema, RubricSchema, type Rubric, type SignalDef } from "@alg/shared"
+import {
+  OperatorSchema,
+  RubricSchema,
+  type OnboardingProfile,
+  type Rubric,
+  type SignalDef,
+} from "@alg/shared"
 import { LlmResponseError, type LlmClient } from "./llm-client.js"
 
 /**
@@ -16,6 +22,23 @@ export interface SuggestRubricOptions {
   description: string
   /** Everything a provider can actually produce for this target type. */
   catalog: readonly SignalDef[]
+  /**
+   * Wer sucht und was er verkauft - aus dem Onboarding.
+   *
+   * Ohne diesen Kontext entwirft das Modell eine Rubrik fuer "gute Firmen im
+   * Allgemeinen". Mit ihm entwirft es eine fuer "Firmen, die zu diesem Angebot
+   * passen" - und das ist die eigentliche Frage. Eine Webagentur und ein
+   * Grosshaendler suchen im selben Gebiet voellig verschiedene Betriebe.
+   */
+  profile?: OnboardingProfile | null
+  /**
+   * Wuensche, die keine Quelle filtern kann (Mitarbeiterzahl, Umsatz).
+   *
+   * Sie kommen aus dem Suchtext und koennen nur pro Lead beurteilt werden -
+   * genau dafuer ist die LLM-Stufe da. Sie hier hereinzureichen ist der
+   * Unterschied zwischen "wurde ignoriert" und "wird beim Bewerten geprueft".
+   */
+  additionalCriteria?: readonly string[]
   signal?: AbortSignal
 }
 
@@ -47,6 +70,11 @@ const SYSTEM_PROMPT = [
   "- Setze die Schwelle so, dass ein durchschnittlicher Treffer knapp darunter und",
   "  ein guter deutlich darüber liegt.",
   "- Labels auf Deutsch, kurz und für den Nutzer verständlich.",
+  "- Steht ein <wer_sucht>-Block dabei, bewertest du nicht 'gute Firma im",
+  "  Allgemeinen', sondern 'passt zu diesem Anbieter'. Eine Werbeagentur und ein",
+  "  Großhändler suchen im selben Gebiet völlig verschiedene Betriebe.",
+  "- Steht ein <nicht_filterbar>-Block dabei, gehören diese Punkte in llm_prompt.",
+  "  Sie sind der Grund, warum es die LLM-Stufe gibt.",
 ].join("\n")
 
 function buildSchema(catalog: readonly SignalDef[]): Record<string, unknown> {
@@ -118,7 +146,7 @@ export async function suggestRubric(options: SuggestRubricOptions): Promise<Sugg
     // far more than the token difference.
     tier: "smart",
     system: SYSTEM_PROMPT,
-    prompt: buildPrompt(options.description, options.catalog),
+    prompt: buildPrompt(options),
     schema: buildSchema(options.catalog),
     maxTokens: 4096,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -197,24 +225,47 @@ function asRecord(value: object): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value))
 }
 
-function buildPrompt(description: string, catalog: readonly SignalDef[]): string {
+function buildPrompt(options: SuggestRubricOptions): string {
   const lines = ["<verfuegbare_signale>"]
 
-  for (const def of catalog) {
+  for (const def of options.catalog) {
     const parts = [`${def.key} (${def.type})`, `Operatoren: ${def.operators.join(", ")}`]
     if (def.enumValues?.length) parts.push(`Werte: ${def.enumValues.join(", ")}`)
     if (def.unit) parts.push(`Einheit: ${def.unit}`)
     lines.push(`- ${parts.join(" | ")}`)
   }
 
-  lines.push(
-    "</verfuegbare_signale>",
-    "",
-    "<beschreibung>",
-    description,
-    "</beschreibung>",
-    "",
-    "Entwirf die Rubrik."
-  )
+  lines.push("</verfuegbare_signale>", "")
+
+  const company = options.profile?.company
+  const offer = options.profile?.offer?.description
+
+  if (company?.name || company?.industry || offer) {
+    // Der Kontext, der aus "gute Firma" ein "passt zu diesem Anbieter" macht.
+    lines.push(
+      "<wer_sucht>",
+      ...(company?.name ? [`Firma: ${company.name}`] : []),
+      ...(company?.industry ? [`Branche: ${company.industry}`] : []),
+      ...(offer ? [`Angebot: ${offer}`] : []),
+      "</wer_sucht>",
+      ""
+    )
+  }
+
+  lines.push("<beschreibung>", options.description, "</beschreibung>", "")
+
+  const additional = options.additionalCriteria ?? []
+  if (additional.length > 0) {
+    lines.push(
+      "<nicht_filterbar>",
+      "Diese Wuensche kann keine Quelle vorfiltern. Nimm sie in llm_prompt auf,",
+      "damit jeder Lead einzeln daraufhin geprueft wird:",
+      ...additional.map((entry) => `- ${entry}`),
+      "</nicht_filterbar>",
+      ""
+    )
+  }
+
+  lines.push("Entwirf die Rubrik.")
   return lines.join("\n")
 }
