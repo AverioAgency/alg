@@ -48,6 +48,15 @@ export interface OverpassAdapterOptions {
    * like "no restaurants in Linz".
    */
   fallbackEndpoints?: string[]
+  /**
+   * Zeitlimit fuer die Mirrors, getrennt vom Hauptendpunkt.
+   *
+   * Gemessen haengen beide Mirrors ohne ein einziges Byte, bis jemand
+   * abbricht. Ihnen dieselben 45s zu geben heisst, den Nutzer 90s auf zwei
+   * Hosts warten zu lassen, die nichts liefern werden. Wer nach 15s nicht zu
+   * senden begonnen hat, ist nicht langsam, sondern weg.
+   */
+  mirrorTimeoutMs?: number
   /** Attempts per endpoint before moving on. */
   maxAttempts?: number
   /** Injectable so retry tests do not actually wait. */
@@ -56,7 +65,26 @@ export interface OverpassAdapterOptions {
   fetchImpl?: typeof safeFetch
 }
 
-/** Public mirrors, in rough order of reliability. */
+/**
+ * Public mirrors, in measured order of reliability.
+ *
+ * Gemessen am 2026-08-04 mit derselben Abfrage (Gastronomie, Oberoesterreich):
+ *
+ *   overpass-api.de        200 in 12-17s, reproduzierbar
+ *   overpass.kumi.systems  keine Antwort, nach 70s abgebrochen
+ *   overpass.private.coffee keine Antwort, nach 60s abgebrochen
+ *
+ * Beide Mirrors haengen also, statt zu antworten oder abzulehnen - genau das
+ * Bild aus dem Fehlerlauf ("This operation was aborted" auf beiden). Sie
+ * bleiben trotzdem drin: sie sind nichts wert, wenn der Hauptendpunkt laeuft,
+ * aber alles wert, wenn er 504 liefert, und ihr Ausfall kostet nur Wartezeit
+ * (siehe mirrorTimeoutMs).
+ *
+ * Nicht aufgenommen: overpass.osm.ch antwortet in 0.3s mit HTTP 200 und einer
+ * leeren Elementliste - es ist eine Schweiz-Instanz. Als Fallback waere das der
+ * schlimmste Fall von allen, weil "keine Firmen in Oberoesterreich" wie ein
+ * gueltiges Ergebnis aussieht statt wie ein Fehler.
+ */
 export const OVERPASS_FALLBACK_ENDPOINTS = [
   "https://overpass.kumi.systems/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
@@ -97,6 +125,7 @@ export class OverpassAdapter implements DiscoveryAdapter {
     endpoint: string
     userAgent: string
     timeoutMs: number
+    mirrorTimeoutMs: number
     maxBytes: number
     fallbackEndpoints: string[]
     maxAttempts: number
@@ -120,6 +149,7 @@ export class OverpassAdapter implements DiscoveryAdapter {
        * nur die doppelte Wartezeit, bis der Mirror drankommt.
        */
       timeoutMs: options.timeoutMs ?? 45_000,
+      mirrorTimeoutMs: options.mirrorTimeoutMs ?? 15_000,
       maxBytes: options.maxBytes ?? 32 * 1024 * 1024,
       fallbackEndpoints: options.fallbackEndpoints ?? OVERPASS_FALLBACK_ENDPOINTS,
       maxAttempts: options.maxAttempts ?? 2,
@@ -189,7 +219,16 @@ export class OverpassAdapter implements DiscoveryAdapter {
       }
     }
 
-    const ql = renderOverpassQl(plan, Math.floor(this.options.timeoutMs / 1000))
+    /**
+     * Overpass' eigenes Zeitlimit muss echt kleiner sein als unseres.
+     *
+     * Vorher waren beide 45s: wir brachen also genau in dem Moment ab, in dem
+     * der Server seine Antwort - und sei es eine ehrliche Fehlermeldung -
+     * geschickt haette. Ein serverseitiger Abbruch nennt den Grund, unser
+     * eigener sagt nur "aborted". Mit 10s Luft gewinnt immer der Server.
+     */
+    const serverTimeoutSeconds = Math.max(5, Math.floor(this.options.timeoutMs / 1000) - 10)
+    const ql = renderOverpassQl(plan, serverTimeoutSeconds)
     const body = await this.fetchWithFallback(ql)
 
     let parsed: unknown
@@ -229,7 +268,11 @@ export class OverpassAdapter implements DiscoveryAdapter {
     const endpoints = [this.options.endpoint, ...this.options.fallbackEndpoints]
     const failures: string[] = []
 
-    for (const endpoint of endpoints) {
+    for (const [index, endpoint] of endpoints.entries()) {
+      // Der erste Endpunkt ist der, der erfahrungsgemaess liefert; die Mirrors
+      // bekommen nur so lange, wie ein antwortender Host brauchen wuerde.
+      const timeoutMs = index === 0 ? this.options.timeoutMs : this.options.mirrorTimeoutMs
+
       for (let attempt = 1; attempt <= this.options.maxAttempts; attempt++) {
         let status: number
         let responseBody: string
@@ -240,7 +283,7 @@ export class OverpassAdapter implements DiscoveryAdapter {
             headers: { "content-type": "application/x-www-form-urlencoded" },
             body: `data=${encodeURIComponent(ql)}`,
             userAgent: this.options.userAgent,
-            timeoutMs: this.options.timeoutMs,
+            timeoutMs,
             maxBytes: this.options.maxBytes,
           })
           status = response.status

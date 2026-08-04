@@ -300,6 +300,39 @@ describe("OverpassAdapter resilience", () => {
     // An unreachable host is not worth a second attempt; move on immediately.
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
+
+  it("gives a mirror less time than the primary endpoint", async () => {
+    // Gemessen haengen beide Mirrors ohne ein einziges Byte, bis jemand
+    // abbricht. Mit demselben Zeitlimit wie der Hauptendpunkt wartet der
+    // Nutzer zweimal 45s auf Hosts, die nichts liefern werden.
+    const fixture = await loadFixture("linz-restaurants.json")
+    const fetchImpl = sequencedFetch([
+      { status: 504, body: "busy" },
+      { status: 504, body: "busy" },
+      { status: 200, body: fixture },
+    ])
+
+    await resilientAdapter(fetchImpl).search(linzSpec)
+
+    const primaryTimeout = (fetchImpl.mock.calls[0]?.[1] as { timeoutMs: number }).timeoutMs
+    const mirrorTimeout = (fetchImpl.mock.calls[2]?.[1] as { timeoutMs: number }).timeoutMs
+    expect(mirrorTimeout).toBeLessThan(primaryTimeout)
+  })
+
+  it("leaves Overpass room to answer before our own timeout fires", async () => {
+    // Beide bei 45s hiess: wir brechen genau dann ab, wenn der Server seine
+    // Antwort - und sei es eine Fehlermeldung - schicken wuerde. Ein
+    // serverseitiger Abbruch nennt den Grund, unserer sagt nur "aborted".
+    const fetchImpl = sequencedFetch([
+      { status: 200, body: await loadFixture("linz-restaurants.json") },
+    ])
+
+    await resilientAdapter(fetchImpl).search(linzSpec)
+
+    const call = fetchImpl.mock.calls[0]?.[1] as { body: string; timeoutMs: number }
+    const declared = /\[timeout:(\d+)\]/.exec(decodeURIComponent(call.body))?.[1]
+    expect(Number(declared) * 1000).toBeLessThan(call.timeoutMs)
+  })
 })
 
 describe("OverpassAdapter.estimateCost", () => {

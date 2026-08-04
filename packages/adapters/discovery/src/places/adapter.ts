@@ -35,7 +35,19 @@ const PlaceSchema = z.object({
       z.object({
         longText: z.string(),
         shortText: z.string().optional(),
-        types: z.array(z.string()),
+        /**
+         * Optional, obwohl Googles Doku es als Pflichtfeld fuehrt.
+         *
+         * In echten Antworten fehlt es gelegentlich, und weil Zod die ganze
+         * Antwort verwirft, kostete ein einziger unvollstaendiger Datensatz
+         * alle 20 Treffer der Seite - der Lauf endete bei null gefundenen
+         * Firmen, obwohl Google geliefert hatte.
+         *
+         * Gelesen wird das Feld nur mit .includes() ("welche Komponente ist die
+         * Stadt?"), da bedeutet ein fehlender Wert schlicht "passt nicht". Der
+         * Vorgabewert macht daraus einen harmlosen Fall statt eines Fehlers.
+         */
+        types: z.array(z.string()).default([]),
       })
     )
     .optional(),
@@ -50,8 +62,14 @@ const PlaceSchema = z.object({
   businessStatus: z.string().optional(),
 })
 
+/**
+ * Die Huelle der Antwort, absichtlich locker.
+ *
+ * `places` bleibt hier ungetypt und wird eintragsweise geprueft (siehe search):
+ * ein einzelner unvollstaendiger Datensatz darf nicht die ganze Seite kosten.
+ */
 const TextSearchResponseSchema = z.object({
-  places: z.array(PlaceSchema).optional(),
+  places: z.array(z.unknown()).optional(),
   nextPageToken: z.string().optional(),
 })
 
@@ -221,9 +239,40 @@ export class PlacesAdapter implements DiscoveryAdapter {
       throw new Error(`Google Places returned an unexpected shape: ${result.error.message}`)
     }
 
-    const entities = (result.data.places ?? [])
-      .map((place) => toRawEntity(place))
+    /**
+     * Ein unlesbarer Eintrag kostet nicht die ganze Seite.
+     *
+     * Die Antwort wird bewusst zweistufig geprueft: die Huelle streng (ist das
+     * ueberhaupt eine Places-Antwort?), die einzelnen Eintraege einzeln. Vorher
+     * war `places` streng typisiert, und ein Datensatz ohne
+     * `addressComponents[].types` liess alle 20 Treffer der Seite durchfallen -
+     * der Lauf endete bei null Firmen, obwohl Google geliefert hatte.
+     *
+     * Google fuegt Felder hinzu und laesst sie in Einzelfaellen weg; ein
+     * Lead-Import muss das aushalten. Was nicht lesbar ist, wird gezaehlt und
+     * uebersprungen, statt den Rest mitzureissen.
+     */
+    const raw = Array.isArray(result.data.places) ? result.data.places : []
+    const skipped: string[] = []
+
+    const entities = raw
+      .map((candidate) => {
+        const place = PlaceSchema.safeParse(candidate)
+        if (!place.success) {
+          skipped.push(place.error.issues[0]?.path.join(".") ?? "unbekannt")
+          return null
+        }
+        return toRawEntity(place.data)
+      })
       .filter((entity): entity is RawEntity => entity !== null)
+
+    if (skipped.length > 0 && entities.length === 0) {
+      // Alles verworfen: dann ist es kein Einzelfall, sondern eine
+      // Formatänderung - und die soll auffallen statt still zu null zu fuehren.
+      throw new Error(
+        `Google Places: kein einziger von ${raw.length} Treffern war lesbar (Felder: ${[...new Set(skipped)].join(", ")})`
+      )
+    }
 
     return result.data.nextPageToken
       ? { entities, cursor: result.data.nextPageToken }

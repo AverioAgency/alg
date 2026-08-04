@@ -162,8 +162,42 @@ describe("PlacesAdapter", () => {
   })
 
   it("rejects an unexpected response shape", async () => {
-    const adapter = makeAdapter(fakeFetch(JSON.stringify({ places: [{ noId: true }] })))
+    const adapter = makeAdapter(fakeFetch(JSON.stringify({ notAPlacesResponse: true, places: 7 })))
     await expect(adapter.search(linzSpec)).rejects.toThrow(/unexpected shape/)
+  })
+
+  it("skips a single unreadable record instead of losing the page", async () => {
+    // Genau der Fall aus der Produktion: Google liefert bei einem Eintrag
+    // keine addressComponents[].types. Vorher fiel dadurch die komplette
+    // Antwort durch die Validierung und die Suche endete bei null Firmen.
+    const adapter = makeAdapter(
+      fakeFetch(
+        JSON.stringify({
+          places: [
+            { noId: true },
+            {
+              id: "places/ok",
+              displayName: { text: "Gasthaus Krone" },
+              formattedAddress: "Landstrasse 1, 4020 Linz",
+              addressComponents: [{ longText: "Linz" }],
+            },
+          ],
+        })
+      )
+    )
+
+    const result = await adapter.search(linzSpec)
+    expect(result.entities).toHaveLength(1)
+    expect(result.entities[0]?.name).toBe("Gasthaus Krone")
+  })
+
+  it("fails loudly when no record at all is readable", async () => {
+    // Ein Ausfall ist ein Einzelfall, zwanzig sind eine Formataenderung -
+    // die soll auffallen statt still zu null Treffern zu fuehren.
+    const adapter = makeAdapter(
+      fakeFetch(JSON.stringify({ places: [{ noId: true }, { alsoNoId: true }] }))
+    )
+    await expect(adapter.search(linzSpec)).rejects.toThrow(/kein einziger/)
   })
 })
 
