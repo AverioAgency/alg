@@ -304,3 +304,60 @@ describe("the category vocabulary and its OSM mapping", () => {
     expect([...knownCompanyCategories()].sort()).toStrictEqual([...companySlugs].sort())
   })
 })
+
+/**
+ * Die offene Suche - ohne gewaehlte Branche.
+ *
+ * Der teuerste Fall gegen Overpass, und der, der in Produktion minutenlang
+ * haengengeblieben ist. Gemessen fuer Oberoesterreich: ohne Selektor scheitert
+ * die Abfrage nach 8-13s serverseitig, dieselbe Abfrage ueber den Raum
+ * Linz/Wels liefert in 6s 500 Objekte.
+ */
+describe("a search with no category chosen", () => {
+  const bbox = (b: [number, number, number, number]): FilterNode => ({
+    op: "within",
+    key: "core.geo",
+    value: { bbox: b },
+  })
+
+  it("never emits a bare selector", () => {
+    // `node(bbox)` allein holt jeden Baum und jede Laterne - Millionen Objekte,
+    // an denen der Server abbricht.
+    const plan = planOverpassQuery({ op: "and", children: [bbox([48, 14, 48.3, 14.4])] }, 100)
+    const ql = renderOverpassQl(plan)
+
+    expect(ql).not.toMatch(/^\s+node\(/m)
+    expect(ql).not.toMatch(/^\s+way\(/m)
+  })
+
+  it("searches the tags that actually carry a business", () => {
+    const plan = planOverpassQuery({ op: "and", children: [bbox([48, 14, 48.3, 14.4])] }, 100)
+    const ql = renderOverpassQl(plan)
+
+    for (const tag of ["shop", "amenity", "craft", "office", "tourism"]) {
+      expect(ql).toContain(`node["${tag}"]`)
+    }
+  })
+
+  it('does not fall back to ["name"]', () => {
+    // Gemessen die schlechteste Option von allen: 105s gegen einen Mirror,
+    // weil jede benannte Strasse und jeder Ort mitmatcht.
+    const plan = planOverpassQuery({ op: "and", children: [bbox([48, 14, 48.3, 14.4])] }, 100)
+    expect(renderOverpassQl(plan)).not.toContain('["name"]')
+  })
+
+  it("keeps a chosen category exactly as it is", () => {
+    // Die Ersatzliste darf nur greifen, wenn wirklich nichts gewaehlt wurde.
+    const plan = planOverpassQuery(
+      {
+        op: "and",
+        children: [bbox([48, 14, 48.3, 14.4]), { op: "eq", key: "core.category", value: "bakery" }],
+      },
+      100
+    )
+    const ql = renderOverpassQl(plan)
+
+    expect(ql).toContain('node["shop"="bakery"]')
+    expect(ql).not.toContain('node["amenity"]')
+  })
+})

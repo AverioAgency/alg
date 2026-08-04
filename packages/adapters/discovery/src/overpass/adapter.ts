@@ -65,6 +65,19 @@ export const OVERPASS_FALLBACK_ENDPOINTS = [
 /** Statuses worth retrying: overload and gateway failures, not client errors. */
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 
+/**
+ * Obergrenze fuer eine Suche ohne Branche, in Quadratgrad.
+ *
+ * Gemessen: der Raum Linz/Wels (0.25 x 0.45 = rund 0.11) liefert in 6s 500
+ * Objekte; ganz Oberoesterreich (1.36 x 2.25 = rund 3.06) scheitert auf jedem
+ * Endpunkt am Zeitlimit. 1.0 liegt dazwischen und laesst einen Ballungsraum
+ * samt Umland zu, waehrend ein ganzes Bundesland eine Branche erfordert.
+ *
+ * Mit Branche gilt die Grenze nicht - craft=* ueber ganz Oberoesterreich kam in
+ * 5s zurueck.
+ */
+const MAX_OPEN_SEARCH_SQUARE_DEGREES = 1.0
+
 export class OverpassAdapter implements DiscoveryAdapter {
   readonly id = "overpass"
   /**
@@ -95,7 +108,18 @@ export class OverpassAdapter implements DiscoveryAdapter {
     this.options = {
       endpoint: options.endpoint,
       userAgent: options.userAgent,
-      timeoutMs: options.timeoutMs ?? 90_000,
+      /**
+       * 45s, nicht 90s.
+       *
+       * Der Wert wird mit drei Endpunkten und zwei Versuchen multipliziert: bei
+       * 90s wartet ein Lauf im schlechtesten Fall neun Minuten, bevor er
+       * aufgibt - und der Nutzer sieht die ganze Zeit einen Ladebalken bei null
+       * Treffern. Gemessen fuer Oberoesterreich: eine Kategorie-Abfrage kommt in
+       * 5-15s zurueck, ein ueberlasteter Endpunkt scheitert nach 8-13s von
+       * selbst. Was 45s nicht schafft, schafft auch 90s meist nicht - es kostet
+       * nur die doppelte Wartezeit, bis der Mirror drankommt.
+       */
+      timeoutMs: options.timeoutMs ?? 45_000,
       maxBytes: options.maxBytes ?? 32 * 1024 * 1024,
       fallbackEndpoints: options.fallbackEndpoints ?? OVERPASS_FALLBACK_ENDPOINTS,
       maxAttempts: options.maxAttempts ?? 2,
@@ -136,6 +160,33 @@ export class OverpassAdapter implements DiscoveryAdapter {
       throw new Error(
         "Overpass requires a geographic constraint; add a core.geo filter with a bbox or a radius."
       )
+    }
+
+    /**
+     * Eine offene Suche ueber eine grosse Flaeche lehnen wir ab, statt sie
+     * abzuschicken.
+     *
+     * Gemessen fuer Oberoesterreich (rund 3.4 Quadratgrad): ohne Kategorie
+     * scheitert die Abfrage nach 8-13s am Zeitlimit des Servers, und zwar auf
+     * jedem Endpunkt. Der Adapter probiert danach zwei Mirrors durch, der Lauf
+     * haengt minutenlang und endet bei null Treffern - ohne dass irgendwo
+     * stuende, warum. Dieselbe Abfrage ueber den Raum Linz/Wels liefert in 6s
+     * 500 Objekte.
+     *
+     * Frueh und mit einem umsetzbaren Hinweis zu scheitern ist deutlich besser
+     * als eine lange Wartezeit auf eine leere Liste.
+     */
+    if (plan.categoryFilters.length === 0 && plan.area.bbox) {
+      const [south = 0, west = 0, north = 0, east = 0] = plan.area.bbox
+      const squareDegrees = Math.abs(north - south) * Math.abs(east - west)
+
+      if (squareDegrees > MAX_OPEN_SEARCH_SQUARE_DEGREES) {
+        throw new Error(
+          `Dieses Gebiet ist für eine Suche ohne Branche zu groß (${squareDegrees.toFixed(1)} Quadratgrad, ` +
+            `Grenze ${MAX_OPEN_SEARCH_SQUARE_DEGREES}). Wähle eine Branche oder ein kleineres Gebiet — ` +
+            `Overpass bricht solche Abfragen serverseitig ab, statt sie zu beantworten.`
+        )
+      }
     }
 
     const ql = renderOverpassQl(plan, Math.floor(this.options.timeoutMs / 1000))

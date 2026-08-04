@@ -361,3 +361,57 @@ describe("toRawEntity", () => {
     expect(entity?.categories).toStrictEqual(["amenity=restaurant", "shop=deli"])
   })
 })
+
+describe("refusing a query Overpass cannot answer", () => {
+  it("rejects an open search over a whole province before sending it", async () => {
+    // Gemessen: ohne Branche scheitert Oberoesterreich (rund 3 Quadratgrad) nach
+    // 8-13s serverseitig, auf jedem Endpunkt. Der Adapter probiert danach zwei
+    // Mirrors durch - der Lauf haengt minutenlang und endet bei null Treffern.
+    // Frueh mit einem umsetzbaren Hinweis zu scheitern ist besser.
+    const adapter = makeAdapter(fakeFetch("{}"))
+
+    await expect(
+      adapter.search({
+        targetType: "local_business",
+        filters: {
+          op: "and",
+          children: [
+            { op: "within", key: "core.geo", value: { bbox: [47.42, 12.75, 48.78, 15.0] } },
+          ],
+        },
+      })
+    ).rejects.toThrow(/zu groß/)
+  })
+
+  it("allows the same area once a category narrows it", async () => {
+    // craft=* ueber ganz Oberoesterreich kam in 5s zurueck - die Grenze gilt nur
+    // fuer die offene Suche.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    const { entities } = await makeAdapter(fetchImpl).search({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [
+          { op: "within", key: "core.geo", value: { bbox: [47.42, 12.75, 48.78, 15.0] } },
+          { op: "eq", key: "core.category", value: "restaurant" },
+        ],
+      },
+    })
+
+    expect(entities.length).toBeGreaterThan(0)
+  })
+
+  it("allows an open search over a city-sized area", async () => {
+    // Raum Linz/Wels: 500 Objekte in 6s.
+    const fetchImpl = fakeFetch(await loadFixture("linz-restaurants.json"))
+    const { entities } = await makeAdapter(fetchImpl).search({
+      targetType: "local_business",
+      filters: {
+        op: "and",
+        children: [{ op: "within", key: "core.geo", value: { bbox: [48.1, 13.95, 48.35, 14.4] } }],
+      },
+    })
+
+    expect(entities.length).toBeGreaterThan(0)
+  })
+})
