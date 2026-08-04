@@ -82,7 +82,7 @@ describe("planOverpassQuery", () => {
     expect(plan.unsupported).toStrictEqual(["core.city"])
   })
 
-  it("pushes down address tags", () => {
+  it("leaves the city to the post-filter but pushes down postcode and country", () => {
     const plan = planOverpassQuery(
       {
         op: "and",
@@ -94,8 +94,10 @@ describe("planOverpassQuery", () => {
       },
       100
     )
+    // Der Ort fehlt hier bewusst: addr:city ist in OSM oft nicht gesetzt, und
+    // an der Quelle zu filtern verwarf brauchbare Treffer (61s/4 statt 3s/15).
+    expect(plan.unsupported).toContain("core.city")
     expect(plan.tagFilters).toStrictEqual([
-      '["addr:city"="Linz"]',
       '["addr:postcode"="4020"]',
       '["addr:country"="AT"]',
     ])
@@ -113,13 +115,32 @@ describe("escapeOverpassValue", () => {
     expect(escapeOverpassValue("back\\slash")).toBe("back\\\\slash")
   })
 
+  it("never sends addr:city, whatever the operator", () => {
+    /**
+     * Gemessen fuer "Elektro" in Oberoesterreich: mit ["addr:city"="Linz"]
+     * kamen nach 61s vier Treffer, ohne den Tag nach 3s fuenfzehn - dieselben
+     * Betriebe plus die, denen niemand das Tag eingetragen hat. Das Feld ist in
+     * OSM weder verlaesslich gefuellt noch indiziert.
+     *
+     * pushTag ignorierte ausserdem den Operator: ein `contains` wurde zur
+     * Gleichheit, "Linz-Urfahr" fiel damit durch eine Suche nach "Linz".
+     */
+    for (const op of ["eq", "contains"] as const) {
+      const plan = planOverpassQuery({ op, key: "core.city", value: "Linz" }, 100)
+      expect(plan.tagFilters.join(" ")).not.toContain("addr:city")
+      expect(plan.unsupported).toContain("core.city")
+    }
+  })
+
   it("neutralizes an injection attempt in a filter value", () => {
+    // core.name statt core.city: der Ort geht seit der addr:city-Messung in den
+    // Nachfilter, der Name wird weiterhin an die Quelle gereicht.
     const plan = planOverpassQuery(
-      { op: "eq", key: "core.city", value: 'Linz"];out;node["amenity"="x' },
+      { op: "eq", key: "core.name", value: 'Elektro"];out;node["amenity"="x' },
       100
     )
     // The injected quote is escaped, so the whole payload stays one QL string.
-    expect(plan.tagFilters[0]).toBe('["addr:city"="Linz\\"];out;node[\\"amenity\\"=\\"x"]')
+    expect(plan.tagFilters[0]).toBe('["name"="Elektro\\"];out;node[\\"amenity\\"=\\"x"]')
   })
 })
 
@@ -162,7 +183,7 @@ describe("renderOverpassQl", () => {
     expect(ql).not.toContain('["shop"="hardware"]["shop"="doityourself"]')
   })
 
-  it("combines a category selector with address filters", () => {
+  it("combines a category selector with the address filters it can push down", () => {
     const plan = planOverpassQuery(
       {
         op: "and",
@@ -174,7 +195,12 @@ describe("renderOverpassQl", () => {
       },
       10
     )
-    expect(renderOverpassQl(plan)).toContain('node["amenity"="restaurant"]["addr:city"="Linz"]')
+    // Der Ort steht nicht mehr in der Abfrage: addr:city ist in OSM oft nicht
+    // gesetzt, und an der Quelle zu filtern verwarf brauchbare Treffer
+    // (gemessen 61s/4 Treffer statt 3s/15). Der Nachfilter hat die Koordinate.
+    const ql = renderOverpassQl(plan)
+    expect(ql).toContain('node["amenity"="restaurant"]')
+    expect(ql).not.toContain("addr:city")
   })
 })
 
@@ -219,7 +245,7 @@ describe("company categories", () => {
     expect(ql).not.toContain('["man_made"="works"]["building"="industrial"]')
   })
 
-  it("combines a company category with a city filter", () => {
+  it("combines a company category with a postcode filter", () => {
     const plan = planOverpassQuery(
       {
         op: "and",
@@ -231,8 +257,10 @@ describe("company categories", () => {
       },
       10
     )
-    // The city filter intersects, the category unions - both at once.
-    expect(renderOverpassQl(plan)).toContain('node["craft"]["addr:city"="Wels"]')
+    // Die Kategorie unioniert weiterhin; der Ort wird nachgelagert geprueft.
+    const ql = renderOverpassQl(plan)
+    expect(ql).toContain('node["craft"]')
+    expect(ql).not.toContain("addr:city")
   })
 
   it("searches several company categories at once", () => {

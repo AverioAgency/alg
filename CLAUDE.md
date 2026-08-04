@@ -188,6 +188,13 @@ Things that will bite, roughly in order of how expensive the mistake is:
   zurück — um danach jedes Objekt zu verwerfen. Teuerste denkbare Abfrage,
   garantiert leeres Ergebnis, und die Quelle der 504er. Der Adapter sagt jetzt,
   dass er die falsche Quelle ist, statt eine andere Frage zu beantworten.
+- **`addr:city` gehört nicht in die Overpass-Abfrage.** Das Tag ist in OSM oft
+  nicht gesetzt und nicht indiziert. Gemessen für "Elektro" in Oberösterreich:
+  mit `["addr:city"="Linz"]` vier Treffer nach 61s, ohne den Tag fünfzehn nach
+  3s — dieselben Betriebe plus die, denen niemand das Tag eingetragen hat. Der
+  Ort geht deshalb in den Nachfilter, wo die Koordinate ohnehin genauer ist.
+  `pushTag` ignorierte zudem den Operator: ein `contains` wurde zur Gleichheit,
+  "Linz-Urfahr" fiel damit durch eine Suche nach "Linz".
 - **Eine Branche ohne passenden Slug darf nicht ersatzlos verschwinden.**
   "Elektroniker" bildet auf keine der 41 Kategorien ab. Die Interpretation ließ
   das Feld leer, Overpass fiel auf die offene Suche zurück (`shop`, `amenity`,

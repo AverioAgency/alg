@@ -216,7 +216,19 @@ export function planOverpassQuery(filters: FilterNode, limit: number): OverpassQ
         }
         break
       case "core.city":
-        pushTag(plan, "addr:city", leaf.value, leaf.key)
+        /**
+         * Der Ort geht NICHT an Overpass, sondern in den Nachfilter.
+         *
+         * `addr:city` ist in OSM oft nicht gesetzt und nicht indiziert. Gemessen
+         * fuer "Elektro" in Oberoesterreich: mit `["addr:city"="Linz"]` kamen
+         * nach 61s vier Treffer, ohne den Tag nach 3s fuenfzehn - dieselben
+         * Betriebe, nur ohne die, denen jemand das Tag nie eingetragen hat.
+         *
+         * Der Nachfilter entscheidet besser: er hat die Koordinate, und
+         * `core.geo` schneidet ohnehin exakt zu. Ein fehlendes Tag ist dort
+         * "unbelegt", an der Quelle waere es "verworfen".
+         */
+        plan.unsupported.push(leaf.key)
         break
       case "core.postal_code":
         pushTag(plan, "addr:postcode", leaf.value, leaf.key)
