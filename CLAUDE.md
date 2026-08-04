@@ -125,6 +125,14 @@ Things that will bite, roughly in order of how expensive the mistake is:
   `PLACES_CATEGORY_QUERY` ging `car_repair` wörtlich an Google, das dann nach
   dieser Zeichenkette suchte und Einzeltreffer lieferte statt einer vollen
   Seite. Ein Test prüft, dass kein Slug mit Unterstrich die API erreicht.
+- **Bewerten reichert nicht an.** `POST /rubrics/:id/score` liest die
+  `enrichments`-Tabelle, mehr nicht — und das ist richtig so, denn Anreicherung
+  kostet Zeit und teils Geld und gehört nicht stillschweigend in eine
+  Bewertung. Der Aufrufer muss `POST /v1/enrichments` davorschalten, sonst
+  steht in jeder Zeile der Aufschlüsselung `actualValue: null` ("nicht
+  gemessen") und jeder Lead bekommt 0 Punkte. Die Rubrik mitzuschicken ist der
+  richtige Weg: der Planer leitet daraus ab, welche Provider laufen müssen —
+  eine feste Signalliste im Client veraltet bei der ersten Rubrikänderung.
 - **Eine leere Rubrik schaltet auch die Datenbeschaffung ab.** Weil die
   Anreicherung bedarfsgetrieben läuft, startet ein Provider nur, wenn etwas
   seine Signale referenziert. `criteria: []` heißt deshalb nicht nur "kein
