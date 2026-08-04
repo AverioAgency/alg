@@ -156,6 +156,7 @@ export { PLAYBOOKS, playbookBySlug, type Playbook } from "./playbooks/playbooks.
 export {
   applyAnswer,
   applyDefaults,
+  applyProfile,
   isRunnable,
   nextQuestions,
   startClarification,

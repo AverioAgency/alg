@@ -262,6 +262,60 @@ export function openApiDocument(version: string): Record<string, unknown> {
           },
           required: ["criteria", "threshold"],
         },
+        OnboardingProfile: {
+          type: "object",
+          description:
+            'What the workspace answered in the onboarding wizard. Every field is optional — a half-finished profile is normal, and a missing answer means "ask me", never "no". `target.region` and `target.categories` are the two that feed back into every later search.',
+          properties: {
+            company: {
+              type: "object",
+              description: "Context for the LLM stage, not a filter.",
+              properties: {
+                name: { type: "string" },
+                industry: { type: "string" },
+                website: { type: "string" },
+              },
+            },
+            offer: {
+              type: "object",
+              description: "Free text on purpose — it is the input to POST /rubrics/suggest.",
+              properties: {
+                description: { type: "string", maxLength: 4000 },
+                rubric_id: { type: "string", format: "uuid" },
+              },
+            },
+            target: {
+              type: "object",
+              description: "The part that pre-fills later searches.",
+              properties: {
+                targetType: {
+                  type: "string",
+                  enum: ["local_business", "company", "person", "list"],
+                },
+                region: {
+                  type: "string",
+                  description:
+                    'Region slug as used by the clarification questions, e.g. "oberoesterreich".',
+                },
+                categories: { type: "array", items: { type: "string" } },
+                playbookSlug: { type: "string" },
+              },
+            },
+            outreach: {
+              type: "object",
+              description:
+                "Steps 4-6: channels, templates, compliance. Recorded but unused until M5 brings outreach; deliberately unmodelled so M5 stays free to decide the shape.",
+              additionalProperties: true,
+            },
+            completedAt: {
+              type: "string",
+              format: "date-time",
+              nullable: true,
+              description: "Null while the wizard is still in progress.",
+            },
+            lastStep: { type: "integer", minimum: 1, maximum: 20 },
+          },
+        },
         LeadScore: {
           type: "object",
           properties: {
@@ -811,6 +865,63 @@ export function openApiDocument(version: string): Record<string, unknown> {
             "200": { description: "Spec" },
             "400": { $ref: "#/components/responses/Problem" },
           },
+        },
+      },
+      "/onboarding": {
+        get: {
+          summary: "Whether this workspace has been through onboarding",
+          description:
+            "The frontend calls this on every visit to decide whether to offer the wizard. `completed: false` with a null profile means it was never started; a `completed_at` means the user reached the end and the entry point disappears. `last_step` lets an interrupted run resume where it stopped rather than restarting.",
+          responses: {
+            "200": {
+              description: "Onboarding state",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      profile: {
+                        $ref: "#/components/schemas/OnboardingProfile",
+                        nullable: true,
+                      },
+                      completed: { type: "boolean" },
+                      completed_at: { type: "string", format: "date-time", nullable: true },
+                      last_step: { type: "integer", nullable: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        patch: {
+          summary: "Save wizard progress, and on the last step mark it done",
+          description:
+            'Merged, not replaced — the wizard saves after each step, and a request carrying only step 3 must not erase what step 2 recorded. `completed: true` stamps `completed_at` once; a later save never rewrites or clears it. What the profile records is not just a flag: region and categories pre-fill the clarification questions on every later search, so a user who said "Oberösterreich, Handwerk" is not asked again each time.',
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    profile: { $ref: "#/components/schemas/OnboardingProfile" },
+                    last_step: { type: "integer", minimum: 1, maximum: 20 },
+                    completed: { type: "boolean", default: false },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Stored state" },
+            "400": { $ref: "#/components/responses/Problem" },
+          },
+        },
+        delete: {
+          summary: "Start onboarding over",
+          description:
+            "Clears the profile entirely, not just the timestamp: a user asking to redo onboarding means the answers too, and keeping them would silently pre-fill the very questions they wanted to revisit.",
+          responses: { "204": { description: "Cleared" } },
         },
       },
       "/playbooks": {

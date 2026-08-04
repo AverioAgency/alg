@@ -42,6 +42,7 @@ const SECTIONS: { id: string; title: string; blurb: string; match: (path: string
     blurb:
       "Von einer vagen Anfrage zu einer lauffähigen Suche. Der Einstieg für ein neues Frontend: ein Playbook starten oder den Rückfrage-Dialog führen.",
     match: (p) =>
+      p.startsWith("/onboarding") ||
       p.startsWith("/playbooks") ||
       p.startsWith("/searches/clarify") ||
       p.startsWith("/searches/preview") ||

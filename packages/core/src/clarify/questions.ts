@@ -1,6 +1,7 @@
 import {
   MATCH_ALL,
   categoriesFor,
+  type OnboardingProfile,
   type FilterNode,
   type SearchSpec,
   type TargetType,
@@ -289,12 +290,46 @@ function collectKeys(node: FilterNode): Set<string> {
 /** A fresh state for a description the user typed. */
 export function startClarification(
   description: string,
-  targetType: TargetType = "company"
+  targetType: TargetType = "company",
+  profile?: OnboardingProfile | null
 ): ClarifyState {
-  return {
-    targetType,
+  const resolvedType = profile?.target?.targetType ?? targetType
+
+  const state: ClarifyState = {
+    targetType: resolvedType,
     description,
     answers: {},
-    spec: { targetType, filters: MATCH_ALL },
+    spec: { targetType: resolvedType, filters: MATCH_ALL },
   }
+
+  return profile ? applyProfile(state, profile) : state
+}
+
+/**
+ * Folds what onboarding learned into a fresh search.
+ *
+ * This is what makes the wizard worth filling in: someone who said
+ * "Oberösterreich, Handwerksbetriebe" gets asked neither again. The answers are
+ * applied exactly as if the user had just given them, so nextQuestions() drops
+ * them on its own - there is no second code path deciding what to skip.
+ *
+ * Only region and categories carry over. The website question and the limit are
+ * per-search decisions: wanting leads without a website today says nothing about
+ * tomorrow, and a stored limit would silently cap searches the user did not
+ * mean to cap.
+ */
+export function applyProfile(state: ClarifyState, profile: OnboardingProfile): ClarifyState {
+  let current = state
+
+  const region = profile.target?.region
+  if (region) {
+    current = applyAnswer(current, { questionId: "region", value: region })
+  }
+
+  const categories = profile.target?.categories
+  if (categories && categories.length > 0) {
+    current = applyAnswer(current, { questionId: "category", value: categories })
+  }
+
+  return current
 }

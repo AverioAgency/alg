@@ -16,6 +16,8 @@ import { type Database } from "@alg/db"
 export interface FakeWorkspace {
   id: string
   slug: string
+  /** The onboarding profile column; null means the wizard was never started. */
+  onboarding?: unknown
 }
 
 export interface FakeState {
@@ -71,8 +73,13 @@ export function createFakeDb(seed: Partial<FakeState> = {}): {
               return {
                 async limit(_count: number) {
                   if (name === "workspaces") {
-                    const match = state.workspaces.find((w) => w.slug === state.lookingForSlug)
-                    return match ? [{ id: match.id }] : []
+                    // Matched by slug when one is being resolved, otherwise the
+                    // first row - the onboarding routes look a workspace up by
+                    // id, which the fake cannot read out of the predicate.
+                    const match = state.lookingForSlug
+                      ? state.workspaces.find((w) => w.slug === state.lookingForSlug)
+                      : state.workspaces[0]
+                    return match ? [{ id: match.id, onboarding: match.onboarding ?? null }] : []
                   }
                   if (name === "workspace_members") {
                     const match = state.members.find((m) => m.userId === state.lookingForUser)
@@ -81,6 +88,22 @@ export function createFakeDb(seed: Partial<FakeState> = {}): {
                   return []
                 },
               }
+            },
+          }
+        },
+      }
+    },
+
+    update(table: unknown) {
+      const name = tableName(table)
+      return {
+        set(values: Record<string, unknown>) {
+          return {
+            async where(_predicate: unknown) {
+              if (name === "workspaces" && state.workspaces[0]) {
+                Object.assign(state.workspaces[0], values)
+              }
+              return []
             },
           }
         },

@@ -3,6 +3,7 @@ import { buildSignalRegistry } from "@alg/adapters-signals"
 import { MAX_QUESTIONS, PLAYBOOKS } from "@alg/core"
 import { decodeSearchSpec } from "@alg/shared"
 import { createClarifyRouter } from "../routes/clarify.js"
+import { createFakeDb, type FakeState } from "./helpers/fake-db.js"
 
 /**
  * The clarification endpoints, exercised through the real handlers.
@@ -19,12 +20,19 @@ interface JsonResponse {
 }
 
 async function callRoute(
-  method: "get" | "post",
+  method: "get" | "post" | "patch" | "delete",
   path: string,
-  payload: { body?: unknown; params?: Record<string, string> } = {}
+  payload: { body?: unknown; params?: Record<string, string>; seed?: Partial<FakeState> } = {}
 ): Promise<JsonResponse> {
   const registry = buildSignalRegistry({ userAgent: "AlgBot/1.0" })
-  const router = createClarifyRouter({ db: undefined as never, registry })
+  // The clarify and preview routes read the workspace's onboarding profile, so
+  // a workspace row has to exist even when the test is about neither.
+  const { db } = createFakeDb(
+    payload.seed ?? {
+      workspaces: [{ id: "11111111-1111-1111-1111-111111111111", slug: "test" }],
+    }
+  )
+  const router = createClarifyRouter({ db, registry })
 
   const layer = router.stack.find(
     (entry) => entry.route?.path === path && entry.route.methods[method] === true
@@ -43,6 +51,10 @@ async function callRoute(
       },
       status(code: number) {
         this.statusCode = code
+        return this
+      },
+      end() {
+        resolve({ body: null, status: this.statusCode })
         return this
       },
     }
@@ -314,5 +326,151 @@ describe("GET /v1/playbooks", () => {
     const data = (body as { data: { slug: string }[] }).data
 
     expect(data.length).toBe(PLAYBOOKS.length)
+  })
+})
+
+/**
+ * The onboarding profile.
+ *
+ * Two jobs, and the tests split along them: recording that the wizard ran (so
+ * the frontend can hide its entry point), and feeding the answers back into
+ * later searches — which is the part that makes filling it in worthwhile.
+ */
+describe("the onboarding profile", () => {
+  const WORKSPACE = { id: "11111111-1111-1111-1111-111111111111", slug: "test" }
+
+  async function onboarding(
+    method: "get" | "patch" | "delete",
+    body?: unknown,
+    seed?: Partial<FakeState>
+  ): Promise<JsonResponse> {
+    return await callRoute(method, "/onboarding", {
+      ...(body !== undefined ? { body } : {}),
+      seed: seed ?? { workspaces: [{ ...WORKSPACE }] },
+    })
+  }
+
+  it("reports a fresh workspace as not onboarded", async () => {
+    // This is what makes the frontend show the wizard in the first place.
+    const { body } = await onboarding("get")
+    const state = body as { profile: unknown; completed: boolean }
+
+    expect(state.completed).toBe(false)
+    expect(state.profile).toBeNull()
+  })
+
+  it("saves a step without marking the wizard done", async () => {
+    const { body } = await onboarding("patch", {
+      profile: { target: { region: "tirol" } },
+      last_step: 3,
+    })
+    const state = body as { completed: boolean; last_step: number }
+
+    expect(state.completed).toBe(false)
+    expect(state.last_step).toBe(3)
+  })
+
+  it("marks it done only when the last step says so", async () => {
+    const { body } = await onboarding("patch", { completed: true, last_step: 6 })
+    const state = body as { completed: boolean; completed_at: string }
+
+    expect(state.completed).toBe(true)
+    expect(state.completed_at).toBeTruthy()
+  })
+
+  it("keeps earlier steps when a later one is saved", async () => {
+    // The wizard saves after each step; a request carrying only step 3 must not
+    // erase what step 2 recorded.
+    const seed: Partial<FakeState> = {
+      workspaces: [
+        { ...WORKSPACE, onboarding: { offer: { description: "Websites für Handwerk" } } },
+      ],
+    }
+
+    const { body } = await onboarding("patch", { profile: { target: { region: "wien" } } }, seed)
+    const state = body as { profile: { offer?: { description?: string } } }
+
+    expect(state.profile.offer?.description).toBe("Websites für Handwerk")
+  })
+
+  it("never un-finishes a completed wizard", async () => {
+    // A later save must not be able to undo the fact that onboarding happened.
+    const seed: Partial<FakeState> = {
+      workspaces: [{ ...WORKSPACE, onboarding: { completedAt: "2026-08-01T10:00:00.000Z" } }],
+    }
+
+    const { body } = await onboarding("patch", { profile: { lastStep: 2 } }, seed)
+    const state = body as { completed: boolean; completed_at: string }
+
+    expect(state.completed).toBe(true)
+    expect(state.completed_at).toBe("2026-08-01T10:00:00.000Z")
+  })
+
+  it("clears everything when the user restarts onboarding", async () => {
+    // Not just the timestamp: someone asking to redo onboarding means the
+    // answers too, and keeping them would silently pre-fill the very questions
+    // they wanted to revisit.
+    const seed: Partial<FakeState> = {
+      workspaces: [
+        {
+          ...WORKSPACE,
+          onboarding: { completedAt: "2026-08-01T10:00:00.000Z", target: { region: "wien" } },
+        },
+      ],
+    }
+
+    const { status } = await onboarding("delete", undefined, seed)
+    expect(status).toBe(204)
+  })
+
+  it("treats an unparseable stored profile as absent", async () => {
+    // A row written by an older version must not flow into the search builder
+    // unvalidated — asking one question again beats a spec nobody checked.
+    const seed: Partial<FakeState> = {
+      workspaces: [{ ...WORKSPACE, onboarding: { target: { categories: "nicht-ein-array" } } }],
+    }
+
+    const { body } = await onboarding("get", undefined, seed)
+    expect((body as { profile: unknown }).profile).toBeNull()
+  })
+})
+
+describe("the profile feeds into the search", () => {
+  it("pre-fills the region, so it is not asked again", async () => {
+    // The whole point of the wizard: after onboarding, a bare sentence is
+    // enough — no geographic constraint to supply, which Overpass would
+    // otherwise refuse outright.
+    const seed: Partial<FakeState> = {
+      workspaces: [
+        {
+          id: "11111111-1111-1111-1111-111111111111",
+          slug: "test",
+          onboarding: {
+            target: { region: "oberoesterreich", categories: ["craft_business"] },
+            completedAt: "2026-08-01T10:00:00.000Z",
+          },
+        },
+      ],
+    }
+
+    const { body } = await callRoute("post", "/searches/clarify", {
+      body: { description: "Tischlereien", target_type: "company" },
+      seed,
+    })
+    const result = body as ClarifyBody
+
+    expect(result.runnable).toBe(true)
+    expect(result.questions.map((q) => q.id)).not.toContain("region")
+    expect(result.questions.map((q) => q.id)).not.toContain("category")
+  })
+
+  it("still asks everything when there is no profile", async () => {
+    const { body } = await callRoute("post", "/searches/clarify", {
+      body: { description: "Tischlereien", target_type: "company" },
+    })
+    const result = body as ClarifyBody
+
+    expect(result.runnable).toBe(false)
+    expect(result.questions.map((q) => q.id)).toContain("region")
   })
 })

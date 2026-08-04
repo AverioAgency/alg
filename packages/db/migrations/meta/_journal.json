@@ -29,6 +29,13 @@
       "when": 1754438400000,
       "tag": "0003_rubrics",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1754524800000,
+      "tag": "0004_onboarding",
+      "breakpoints": true
     }
   ]
 }
