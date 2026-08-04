@@ -106,6 +106,14 @@ Things that will bite, roughly in order of how expensive the mistake is:
   `landuse` an `industrial` search silently became an AND of two tags and matched
   nothing — no error, just zero results. The planner now records
   `categoryFilters` instead.
+- **429/504 von Overpass heisst "kein Slot frei", nicht "Dienst kaputt".** Der
+  Dienst hält zwei gleichzeitige Abfragen pro IP. Nach mehreren Testläufen
+  hintereinander lehnt er dieselbe Abfrage ab, die von einer anderen IP in
+  Sekunden durchläuft — nachgewiesen mit der Wien-bbox: auf dem Server 504,
+  vom Entwicklungsrechner HTTP 200 in 4–11s. Der Adapter wartete zwischen den
+  Versuchen 1s, was kein Backoff ist, sondern Nachlegen; jetzt 5s × Versuch.
+  Die Fehlermeldung sagt "drosselt" statt "unavailable" — letzteres las sich
+  wie ein Ausfall und schickte die Fehlersuche stundenlang in den Adapter.
 - **Overpass's public endpoint is unreliable under load, and says so in HTML.**
   The same query that returned 635 objects failed minutes later with an XHTML
   error page, not JSON. That is what the retry-and-mirror logic in the adapter is

@@ -69,6 +69,13 @@ export interface OverpassAdapterOptions {
   mirrorTimeoutMs?: number
   /** Attempts per endpoint before moving on. */
   maxAttempts?: number
+  /**
+   * Wartezeit vor dem zweiten Versuch, mit der Versuchsnummer multipliziert.
+   *
+   * Overpass gibt Slots im Zehnersekundenbereich frei; alles darunter ist kein
+   * Backoff. Injizierbar, damit Tests nicht wirklich warten.
+   */
+  retryDelayMs?: number
   /** Injectable so retry tests do not actually wait. */
   sleep?: (ms: number) => Promise<void>
   /** Test seam so contract tests never touch the network. */
@@ -139,6 +146,7 @@ export class OverpassAdapter implements DiscoveryAdapter {
     maxBytes: number
     fallbackEndpoints: string[]
     maxAttempts: number
+    retryDelayMs: number
     sleep: (ms: number) => Promise<void>
     fetchImpl: typeof safeFetch
   }
@@ -171,6 +179,7 @@ export class OverpassAdapter implements DiscoveryAdapter {
       maxBytes: options.maxBytes ?? 32 * 1024 * 1024,
       fallbackEndpoints: options.fallbackEndpoints ?? OVERPASS_FALLBACK_ENDPOINTS,
       maxAttempts: options.maxAttempts ?? 2,
+      retryDelayMs: options.retryDelayMs ?? 5_000,
       sleep: options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       fetchImpl: options.fetchImpl ?? safeFetch,
     }
@@ -378,15 +387,41 @@ export class OverpassAdapter implements DiscoveryAdapter {
         if (!RETRYABLE_STATUS.has(status)) break
 
         if (attempt < this.options.maxAttempts) {
-          // Overpass publishes a rate limit of a couple of slots; backing off
-          // briefly is more likely to succeed than hammering it.
-          await this.options.sleep(1000 * attempt)
+          /**
+           * Sekunden warten, nicht eine Sekunde.
+           *
+           * 429 und 504 heissen bei Overpass fast immer "kein Slot frei", nicht
+           * "die Abfrage ist zu teuer": der Dienst haelt nur zwei gleichzeitige
+           * Slots pro IP, und sie werden im Zehnersekundenbereich frei. Mit 1s
+           * Pause war der zweite Versuch praktisch garantiert derselbe Fehler -
+           * das war kein Backoff, sondern Nachlegen.
+           *
+           * Nachgewiesen: dieselbe Wien-Abfrage, die auf dem Server 504 ergab,
+           * lief vom Entwicklungsrechner in 4-11s durch. Nicht die Abfrage war
+           * das Problem, sondern wie oft dieselbe IP kurz zuvor gefragt hatte.
+           */
+          await this.options.sleep(this.options.retryDelayMs * attempt)
         }
       }
     }
 
+    /**
+     * Drosselung heisst Drosselung, nicht "nicht erreichbar".
+     *
+     * 429 und 504 auf allen Endpunkten ist der Normalfall, wenn dieselbe IP
+     * kurz zuvor mehrfach gefragt hat - Overpass haelt zwei Slots pro IP. Die
+     * alte Meldung ("unavailable") las sich wie ein Ausfall des Dienstes und
+     * schickte die Fehlersuche stundenlang in den Adapter, waehrend dieselbe
+     * Abfrage von einem anderen Rechner in Sekunden durchlief.
+     */
+    const throttled = failures.every((failure) => /HTTP (429|504)|aborted/i.test(failure))
     throw new Error(
-      `Overpass unavailable after trying ${endpoints.length} endpoint(s): ${failures.join("; ")}`
+      throttled
+        ? `Overpass drosselt gerade (${endpoints.length} Endpunkte, alle abgelehnt). ` +
+          "Der Dienst erlaubt zwei gleichzeitige Abfragen pro IP und ist kostenlos - " +
+          "in ein paar Minuten erneut versuchen. Details: " +
+          failures.join("; ")
+        : `Overpass unavailable after trying ${endpoints.length} endpoint(s): ${failures.join("; ")}`
     )
   }
 }

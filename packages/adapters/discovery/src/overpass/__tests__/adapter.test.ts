@@ -305,6 +305,32 @@ describe("OverpassAdapter resilience", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
+  it("calls throttling by its name", async () => {
+    // 429/504 auf allen Endpunkten heisst "kein Slot frei", nicht "Dienst tot".
+    // Die alte Meldung ("unavailable") schickte die Fehlersuche in den Adapter,
+    // waehrend dieselbe Abfrage von einer anderen IP in Sekunden durchlief.
+    const fetchImpl = sequencedFetch([{ status: 429, body: "slot limit" }])
+    await expect(resilientAdapter(fetchImpl).search(linzSpec)).rejects.toThrow(/drosselt/)
+  })
+
+  it("waits seconds before retrying, not a second", async () => {
+    // Overpass gibt Slots im Zehnersekundenbereich frei; 1s war kein Backoff.
+    const slept: number[] = []
+    const adapter = new OverpassAdapter({
+      endpoint: "https://primary.test/api/interpreter",
+      userAgent: "AlgBot/1.0",
+      fetchImpl: sequencedFetch([{ status: 429, body: "slot limit" }]) as never,
+      fallbackEndpoints: [],
+      maxAttempts: 2,
+      sleep: async (ms) => {
+        slept.push(ms)
+      },
+    })
+
+    await expect(adapter.search(linzSpec)).rejects.toThrow()
+    expect(slept[0]).toBeGreaterThanOrEqual(5_000)
+  })
+
   it("names every endpoint it tried when all of them fail", async () => {
     const fetchImpl = sequencedFetch([{ status: 504, body: "busy" }])
 
