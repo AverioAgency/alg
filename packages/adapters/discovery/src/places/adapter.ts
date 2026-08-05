@@ -171,14 +171,29 @@ export class PlacesAdapter implements DiscoveryAdapter {
     const limit = spec.limit ?? 60
     const plan = planPlacesQuery(spec)
 
-    if (!plan.textQuery && !plan.locationBias) {
+    /**
+     * Ohne Suchbegriff wird nicht gesucht - und schon gar nicht nach "business".
+     *
+     * Frueher stand hier `plan.textQuery || "business"`: eine Suche ohne
+     * Branche, Name und Ort schickte das Wort "business" mit einem Bias-Kreis
+     * an Google und bekam irgendwelche Betriebe zurueck - Billa, ein Hotel im
+     * Salzburger Bergland (der Kreis um Oesterreichs Mittelpunkt), zwei Pubs.
+     * Diese Treffer landeten in der Datenbank und spuelte jede spaetere
+     * Bewertung wieder hoch; die "immer gleichen 11" stammten genau hier.
+     *
+     * Eine offene Gebietssuche ist Overpass' Disziplin. Places ohne Text
+     * beantwortet eine Frage, die niemand gestellt hat - also lehnt es ab und
+     * sagt, was fehlt.
+     */
+    if (!plan.textQuery) {
       throw new Error(
-        "Google Places requires a text query or a location; add a core.category, core.name or core.geo filter."
+        "Google Places braucht einen Suchbegriff - eine Branche, einen Firmennamen oder einen Ort. " +
+          "Für eine offene Gebietssuche ist OpenStreetMap die richtige Quelle."
       )
     }
 
     const body: Record<string, unknown> = {
-      textQuery: plan.textQuery || "business",
+      textQuery: plan.textQuery,
       languageCode: this.languageCode,
       regionCode: this.regionCode,
       maxResultCount: Math.min(limit, this.pricing.pageSize),

@@ -246,6 +246,14 @@ Things that will bite, roughly in order of how expensive the mistake is:
   prüft die Bedingung darum ein zweites Mal ohne die ungemessenen Felder: hält
   sie dann, lag es nur an fehlenden Daten. Für `core.geo` gibt es zusätzlich
   den Ländercode als groben Ersatz.
+- **Ein erfundener Suchbegriff ist schlimmer als kein Ergebnis.** Places
+  schickte bei leerem `textQuery` das Wort `"business"` mit einem Bias-Kreis —
+  eine Suche ohne Branche bekam Billa, ein Hotel im Salzburger Bergland (der
+  Kreis um Österreichs Mittelpunkt) und zwei Pubs. Diese Treffer landeten in
+  der Datenbank und spülte jede `all:true`-Bewertung wieder hoch: die "immer
+  gleichen 11" stammten genau hier. Ohne Suchbegriff lehnt Places jetzt ab und
+  nennt die richtige Quelle (Overpass) — kein bezahlter Aufruf für eine Frage,
+  die niemand gestellt hat.
 - **`supports` ist eine Absichtserklärung, kein Beleg.** Die Registry teilt
   Filter anhand der statischen Liste in "pushed down" und "nachgelagert" — ob
   die Quelle den Filter im konkreten Lauf *wirklich* angewandt hat, steht dort

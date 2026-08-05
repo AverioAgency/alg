@@ -151,7 +151,26 @@ describe("PlacesAdapter", () => {
         targetType: "local_business",
         filters: { op: "eq", key: "web.presence.has_website", value: false },
       })
-    ).rejects.toThrow(/text query or a location/)
+    ).rejects.toThrow(/Suchbegriff/)
+  })
+
+  it("refuses an open area search instead of inventing 'business'", async () => {
+    /**
+     * Frueher wurde hier "business" als Suchbegriff erfunden: eine Suche ohne
+     * Branche bekam Billa, ein Hotel im Salzburger Bergland und zwei Pubs -
+     * die dann als Dauergaeste in jeder spaeteren Bewertung auftauchten.
+     * Offene Gebietssuchen sind Overpass' Disziplin.
+     */
+    const fetchImpl = fakeFetch("{}")
+    const adapter = makeAdapter(fetchImpl)
+    await expect(
+      adapter.search({
+        targetType: "local_business",
+        filters: { op: "within", key: "core.geo", value: { bbox: [48.11, 16.18, 48.33, 16.58] } },
+      })
+    ).rejects.toThrow(/Suchbegriff/)
+    // Vor allem: kein bezahlter Aufruf fuer eine erfundene Frage.
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it("does not leak the response body on an error status", async () => {
