@@ -63,6 +63,17 @@ export const searchRuns = pgTable(
 
     entitiesFound: integer("entities_found").notNull().default(0),
     entitiesNew: integer("entities_new").notNull().default(0),
+    /**
+     * Die Firmen, die DIESER Lauf geliefert hat - neue und wiedergefundene.
+     *
+     * Ohne diese Liste kann niemand "das Ergebnis dieser Suche" bewerten oder
+     * anzeigen: `first_seen_run_id` kennt nur die Erstfunde, und ein Autohaus,
+     * das schon in der Datenbank stand, gehoert trotzdem zum Ergebnis. Die
+     * Bewertung lief deshalb mit all:true ueber den ganzen Workspace, und eine
+     * Suche nach Autohaeusern zeigte die Restaurants der Vortage - frisch
+     * bewertet, mit 0 Punkten, aber in der Liste.
+     */
+    companyIds: jsonb("company_ids").$type<string[]>(),
     entitiesDuplicate: integer("entities_duplicate").notNull().default(0),
     /** Actual spend in EUR cents; integer avoids float drift on money. */
     costCents: bigint("cost_cents", { mode: "number" }).notNull().default(0),

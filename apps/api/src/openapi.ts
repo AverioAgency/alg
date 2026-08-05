@@ -624,7 +624,9 @@ export function openApiDocument(version: string): Record<string, unknown> {
       },
       "/runs/{id}": {
         get: {
-          summary: "One run, with counters and cost",
+          summary: "One run, with counters, cost and the companies it produced",
+          description:
+            "company_ids lists every company this run delivered, new and re-found. Pass it to /rubrics/{id}/score and /enrichments so only this search's result is judged - all:true scores the whole workspace, which is how a search for car dealers once displayed last week's restaurants.",
           parameters: [
             { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
           ],

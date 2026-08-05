@@ -383,6 +383,13 @@ function toRunResponse(row: typeof searchRuns.$inferSelect) {
     // Money is stored in cents to avoid float drift; the wire format is euros.
     cost_eur: row.costCents / 100,
     plan: row.plan,
+    /**
+     * Die Firmen dieses Laufs, damit der Aufrufer genau sie bewertet.
+     *
+     * Ohne die Liste blieb ihm nur all:true - und eine Suche nach Autohaeusern
+     * bewertete und zeigte die Restaurants aus den Laeufen davor.
+     */
+    company_ids: row.companyIds ?? null,
     error: row.errorKey ? { key: row.errorKey, detail: row.errorDetail } : null,
     started_at: row.startedAt?.toISOString() ?? null,
     finished_at: row.finishedAt?.toISOString() ?? null,

@@ -108,6 +108,9 @@ export function createDiscoveryWorker(options: DiscoveryWorkerOptions): Worker<D
                 // Cents, rounded up: never under-report what was spent.
                 costCents: Math.ceil(result.costEur * 100),
                 plan: result.adapters,
+                // Neue wie wiedergefundene: beides ist Ergebnis dieses Laufs.
+                // Dedupliziert, weil zwei Quellen dieselbe Firma liefern koennen.
+                companyIds: [...new Set(result.outcomes.map((outcome) => outcome.companyId))],
                 finishedAt: new Date(),
                 updatedAt: new Date(),
               })

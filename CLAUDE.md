@@ -149,6 +149,14 @@ Things that will bite, roughly in order of how expensive the mistake is:
   das Modell "gute Firma im Allgemeinen" statt "passt zu diesem Anbieter". Eine
   Werbeagentur und ein Großhändler suchen im selben Gebiet völlig verschiedene
   Betriebe.
+- **`all: true` beim Bewerten zeigt den Workspace, nicht die Suche.** Die
+  Leadliste einer Rubrik enthält jede Firma, die je unter ihr bewertet wurde.
+  Wer nach einem Lauf mit `all: true` bewertet, bewertet auch die Funde aller
+  früheren Suchen — eine Suche nach Autohäusern zeigte die Restaurants der
+  Vortage, frisch bewertet mit 0 Punkten. `search_runs.company_ids` (Migration
+  0006) hält fest, was **dieser** Lauf geliefert hat — neue und wiedergefundene
+  Firmen, denn `first_seen_run_id` kennt nur Erstfunde. Der Aufrufer reicht die
+  Liste an `/enrichments` und `/rubrics/:id/score` weiter.
 - **Bewerten reichert nicht an.** `POST /rubrics/:id/score` liest die
   `enrichments`-Tabelle, mehr nicht — und das ist richtig so, denn Anreicherung
   kostet Zeit und teils Geld und gehört nicht stillschweigend in eine
