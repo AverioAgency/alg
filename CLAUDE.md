@@ -132,6 +132,18 @@ Things that will bite, roughly in order of how expensive the mistake is:
   (Mitarbeiterzahl, Umsatz) geht als `forRubric` an die LLM-Stufe, statt
   stillschweigend zu verschwinden. Ohne `ANTHROPIC_API_KEY` fragt der Assistent
   wie bisher nach — unbequemer, aber vollständig funktionsfähig.
+- **Ein Profil ist eine Voreinstellung, keine Vorschrift.** `startClarification`
+  hatte die Rangfolge umgekehrt (`profile?.target?.targetType ?? targetType`)
+  und überschrieb damit genau das, was der Nutzer im Umschalter angeklickt
+  hatte. Stand im Onboarding `list`, wurde jede Suche zur Listensuche — und
+  weil dafür kein Provider Signale liefert, scheiterte erst der Rubrikentwurf,
+  dann die Anreicherung. `list` wird zusätzlich ganz verworfen: der Zieltyp
+  entsteht nur durch CSV-Import, keine Quelle sucht danach, und ein einmal
+  gespeicherter Wert bleibt in der Datenbank, bis ihn jemand überschreibt.
+- **Ein leerer Signalkatalog ist kein LLM-Fehler.** `suggestRubric` warf dafür
+  `LlmResponseError`, die Route machte daraus `llm-unavailable` — und schickte
+  die Fehlersuche zum API-Schlüssel statt zum Zieltyp. Die Route prüft das
+  jetzt vorher und antwortet mit 400 plus der Liste der brauchbaren Zieltypen.
 - **Ohne Onboarding-Kontext entwirft die KI die falsche Rubrik.** `suggestRubric`
   bekommt jetzt `profile`: ohne zu wissen, wer sucht und was er verkauft, bewertet
   das Modell "gute Firma im Allgemeinen" statt "passt zu diesem Anbieter". Eine

@@ -145,6 +145,23 @@ export function createRubricsRouter(options: RubricsRouterOptions): Router {
 
       const catalog = options.registry.signalDefs(body.target_type)
 
+      /**
+       * Kein Signal fuer diesen Zieltyp ist kein LLM-Problem.
+       *
+       * `suggestRubric` warf bei leerem Katalog einen LlmResponseError, den die
+       * Route als "llm-unavailable" weitergab - eine Falschaussage: das Modell
+       * war erreichbar, es gab nur nichts zu bewerten. Fuer `list` liefert kein
+       * Provider Signale, und die Meldung schickte die Fehlersuche zum
+       * API-Schluessel statt zum Zieltyp.
+       */
+      if (catalog.length === 0) {
+        throw new AppError(PROBLEM_TYPES.VALIDATION_FAILED, {
+          detail:
+            `Für den Zieltyp "${body.target_type}" gibt es keine Signale, also auch nichts zu bewerten. ` +
+            "Lokale Betriebe und Firmen werden unterstützt.",
+        })
+      }
+
       try {
         // Das Onboarding-Profil geht mit: ohne den Kontext entwirft das Modell
         // eine Rubrik fuer "gute Firmen im Allgemeinen" statt fuer "Firmen, die

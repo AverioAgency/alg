@@ -370,10 +370,36 @@ export function applyInterpretation(
 /** A fresh state for a description the user typed. */
 export function startClarification(
   description: string,
-  targetType: TargetType = "company",
+  targetType?: TargetType | null,
   profile?: OnboardingProfile | null
 ): ClarifyState {
-  const resolvedType = profile?.target?.targetType ?? targetType
+  /**
+   * Der Zieltyp aus der Anfrage gewinnt, das Profil fuellt nur die Luecke.
+   *
+   * Vorher war es umgekehrt: `profile?.target?.targetType ?? targetType`
+   * ueberschrieb genau das, was der Nutzer gerade im Umschalter angeklickt
+   * hatte. Stand im Onboarding "list", wurde jede Suche zu einer Listensuche -
+   * und weil fuer `list` kein Provider Signale liefert, scheiterte zuerst der
+   * Rubrikentwurf ("no signals available for this target type") und danach die
+   * Anreicherung. Aus "Autohaus in Linz" wurden zwei Fehlermeldungen.
+   *
+   * Ein Profil ist eine Voreinstellung, keine Vorschrift.
+   */
+  const fromProfile = profile?.target?.targetType
+
+  /**
+   * Ein Profil darf keinen Zieltyp vorgeben, fuer den nichts funktioniert.
+   *
+   * `list` entsteht nur durch CSV-Import: keine Quelle sucht danach, kein
+   * Provider liefert Signale dafuer. Als gespeicherte Voreinstellung machte er
+   * jede Suche unbrauchbar - "no signals available for this target type" beim
+   * Rubrikentwurf, danach dasselbe bei der Anreicherung. Ein Wert, der einmal
+   * in der Datenbank steht, bleibt dort, bis ihn jemand ueberschreibt; deshalb
+   * wird er hier abgefangen statt nur im Formular.
+   */
+  const usableFromProfile = fromProfile === "list" ? undefined : fromProfile
+
+  const resolvedType: TargetType = targetType ?? usableFromProfile ?? "company"
 
   const state: ClarifyState = {
     targetType: resolvedType,

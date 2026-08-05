@@ -44,9 +44,37 @@ describe("a profile pre-fills a search", () => {
     expect(nextQuestions(withProfile).length).toBeLessThan(nextQuestions(without).length)
   })
 
-  it("takes the target type from the profile", () => {
-    const state = startClarification("x", "local_business", PROFILE)
+  it("takes the target type from the profile when the caller names none", () => {
+    const state = startClarification("x", null, PROFILE)
     expect(state.targetType).toBe("company")
+  })
+
+  it("lets an explicit target type win over the profile", () => {
+    /**
+     * Das Profil ist eine Voreinstellung, keine Vorschrift. Vorher gewann es
+     * gegen den Umschalter: stand im Onboarding "list", wurde jede Suche zur
+     * Listensuche - und weil fuer `list` kein Provider Signale liefert,
+     * scheiterte erst der Rubrikentwurf ("no signals available for this target
+     * type") und dann die Anreicherung. Aus "Autohaus in Linz" wurden zwei
+     * Fehlermeldungen.
+     */
+    const state = startClarification("x", "local_business", PROFILE)
+    expect(state.targetType).toBe("local_business")
+  })
+
+  it("ignores a stored target type nothing can search", () => {
+    /**
+     * `list` entsteht nur durch CSV-Import - keine Quelle sucht danach, kein
+     * Provider liefert Signale dafuer. Stand er im Profil, scheiterte jede
+     * Suche zweimal: beim Rubrikentwurf und bei der Anreicherung. Ein Wert, der
+     * einmal in der Datenbank steht, bleibt dort - also hier abfangen.
+     */
+    const state = startClarification("x", null, {
+      ...PROFILE,
+      target: { ...PROFILE.target, targetType: "list" },
+    })
+
+    expect(state.targetType).not.toBe("list")
   })
 
   it("does not carry the website question over", () => {
