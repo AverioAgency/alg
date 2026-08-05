@@ -175,7 +175,11 @@ export function applyAnswer(state: ClarifyState, answer: ClarifyAnswer): Clarify
     case "region": {
       const area = REGION_BBOX[String(answer.value)]
       if (area) {
-        spec = withFilter(spec, { op: "within", key: "core.geo", value: { bbox: area } })
+        spec = withFilterReplacing(spec, ["core.geo"], {
+          op: "within",
+          key: "core.geo",
+          value: { bbox: area },
+        })
       }
       break
     }
@@ -186,9 +190,17 @@ export function applyAnswer(state: ClarifyState, answer: ClarifyAnswer): Clarify
           ? [String(answer.value)]
           : []
       if (values.length === 1) {
-        spec = withFilter(spec, { op: "eq", key: "core.category", value: values[0] })
+        spec = withFilterReplacing(spec, ["core.category", "core.name"], {
+          op: "eq",
+          key: "core.category",
+          value: values[0],
+        })
       } else if (values.length > 1) {
-        spec = withFilter(spec, { op: "in", key: "core.category", value: values })
+        spec = withFilterReplacing(spec, ["core.category", "core.name"], {
+          op: "in",
+          key: "core.category",
+          value: values,
+        })
       }
       break
     }
@@ -267,6 +279,46 @@ const REGION_BBOX: Record<string, [number, number, number, number]> = {
 }
 
 /** Adds a leaf to the spec's top-level AND, creating one if needed. */
+/**
+ * Entfernt jede Bedingung auf den genannten Schluesseln, beliebig tief.
+ *
+ * Noetig, weil drei Quellen nacheinander in dieselbe Spec schreiben: das
+ * Onboarding-Profil, die Interpretation des Suchtexts und die expliziten
+ * Antworten. Ohne das Ersetzen stapelten sie sich - eine echte Spec aus der
+ * Produktion enthielt die bbox von ganz Oesterreich UND die von
+ * Oberoesterreich, alle 22 Kategorien UND zweimal "restaurant", alles ge-ANDet.
+ * Sobald sich zwei Schichten widersprechen, ist so eine Suche leer oder falsch.
+ *
+ * Wer spaeter schreibt, meint es aktueller: die Antwort ersetzt die
+ * Interpretation, die Interpretation ersetzt das Profil.
+ */
+function stripKeys(node: FilterNode, keys: ReadonlySet<string>): FilterNode | null {
+  if (node.op === "and" || node.op === "or") {
+    const children = node.children
+      .map((child) => stripKeys(child, keys))
+      .filter((child): child is FilterNode => child !== null)
+    if (children.length === 0) return null
+    if (children.length === 1 && node.op === "and") return children[0] ?? null
+    return { ...node, children }
+  }
+  if (node.op === "not") {
+    const child = stripKeys(node.child, keys)
+    return child === null ? null : { ...node, child }
+  }
+  return "key" in node && keys.has(node.key) ? null : node
+}
+
+/** withFilter, aber vorher raeumen: eine Bedingung pro Schluessel. */
+function withFilterReplacing(
+  spec: SearchSpec,
+  keys: readonly string[],
+  leaf: FilterNode
+): SearchSpec {
+  const stripped = stripKeys(spec.filters, new Set(keys))
+  const base: SearchSpec = { ...spec, filters: stripped ?? MATCH_ALL }
+  return withFilter(base, leaf)
+}
+
 function withFilter(spec: SearchSpec, leaf: FilterNode): SearchSpec {
   const filters = spec.filters
 
@@ -346,7 +398,7 @@ export function applyInterpretation(
      */
     current = {
       ...current,
-      spec: withFilter(current.spec, {
+      spec: withFilterReplacing(current.spec, ["core.name"], {
         op: "contains",
         key: "core.name",
         value: interpreted.tradeTerm,
@@ -361,7 +413,10 @@ export function applyInterpretation(
     const leaf = /^\d{4,5}$/.test(interpreted.city)
       ? { op: "eq" as const, key: "core.postal_code", value: interpreted.city }
       : { op: "contains" as const, key: "core.city", value: interpreted.city }
-    current = { ...current, spec: withFilter(current.spec, leaf) }
+    current = {
+      ...current,
+      spec: withFilterReplacing(current.spec, ["core.city", "core.postal_code"], leaf),
+    }
   }
 
   return current

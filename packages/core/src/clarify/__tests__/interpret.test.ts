@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { categoriesFor } from "@alg/shared"
 import { type LlmClient } from "../../scoring/llm-client.js"
 import { interpretSearch } from "../interpret.js"
-import { KNOWN_REGIONS, applyInterpretation, startClarification } from "../questions.js"
+import { KNOWN_REGIONS, applyAnswer, applyInterpretation, startClarification } from "../questions.js"
 
 /**
  * Der Suchtext wurde bis hierher gespeichert und nie gelesen: wer "Baufirmen in
@@ -170,6 +170,67 @@ describe("eine Branche ohne passenden Slug", () => {
     const filters = JSON.stringify(after.spec.filters)
     expect(filters).toContain("core.category")
     expect(filters).not.toContain("core.name")
+  })
+})
+
+describe("Schichten ersetzen sich, statt sich zu stapeln", () => {
+  /**
+   * Nachgestellt aus einer echten Spec: Profil (ganz Oesterreich + alle 22
+   * Kategorien), Interpretation (Oberoesterreich + restaurant + Linz) und
+   * Antworten (Oberoesterreich + restaurant) schrieben nacheinander in
+   * dieselbe Suche - alles ge-ANDet, mit zwei sich widersprechenden bboxen
+   * und drei Kategoriebedingungen.
+   */
+  it("keeps one bbox, one category and one city across all three layers", () => {
+    let state = startClarification("Restaurants in Linz", null, {
+      target: {
+        targetType: "local_business",
+        region: "austria",
+        categories: [
+          "restaurant", "cafe", "bar", "hotel", "bakery", "butcher", "hairdresser",
+          "supermarket", "pharmacy", "doctor", "dentist", "car_repair", "car_dealer",
+          "florist", "optician", "furniture", "hardware", "clothes", "electronics",
+          "craft", "gym", "veterinary",
+        ],
+      },
+    })
+
+    state = applyInterpretation(state, {
+      region: "oberoesterreich",
+      city: "Linz",
+      categories: ["restaurant"],
+      limit: null,
+    })
+
+    state = applyAnswer(state, { questionId: "region", value: "oberoesterreich" })
+    state = applyAnswer(state, { questionId: "category", value: "restaurant" })
+
+    const json = JSON.stringify(state.spec.filters)
+    expect(json.match(/core\.geo/g)).toHaveLength(1)
+    expect(json.match(/core\.category/g)).toHaveLength(1)
+    expect(json.match(/core\.city/g)).toHaveLength(1)
+    // Die letzte Schicht gewinnt: eine Kategorie, nicht 22.
+    expect(json).toContain('"value":"restaurant"')
+    expect(json).not.toContain("car_dealer")
+    // Und die engere Region, nicht ganz Oesterreich.
+    expect(json).not.toContain("46.37")
+  })
+
+  it("the text's trade term replaces nothing when an answer later picks a category", () => {
+    // Namensfilter ist der Notnagel; eine spaeter gewaehlte Kategorie raeumt
+    // ihn weg, sonst suchte die Spec Namen UND Kategorie zugleich.
+    let state = applyInterpretation(startClarification("Elektroniker", null), {
+      region: null,
+      city: null,
+      categories: [],
+      tradeTerm: "Elektro",
+      limit: null,
+    })
+    state = applyAnswer(state, { questionId: "category", value: "electronics" })
+
+    const json = JSON.stringify(state.spec.filters)
+    expect(json).not.toContain("core.name")
+    expect(json).toContain("electronics")
   })
 })
 

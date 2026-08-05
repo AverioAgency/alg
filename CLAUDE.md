@@ -132,6 +132,13 @@ Things that will bite, roughly in order of how expensive the mistake is:
   (Mitarbeiterzahl, Umsatz) geht als `forRubric` an die LLM-Stufe, statt
   stillschweigend zu verschwinden. Ohne `ANTHROPIC_API_KEY` fragt der Assistent
   wie bisher nach — unbequemer, aber vollständig funktionsfähig.
+- **Profil, Interpretation und Antworten schreiben in dieselbe Spec — sie
+  müssen sich ersetzen, nicht stapeln.** Eine echte Spec enthielt die bbox von
+  ganz Österreich UND die von Oberösterreich, alle 22 Kategorien UND zweimal
+  `restaurant`, alles ge-ANDet — sobald sich zwei Schichten widersprechen, ist
+  die Suche leer oder falsch. `withFilterReplacing` räumt vor dem Anhängen alle
+  Bedingungen auf denselben Schlüsseln weg; wer später schreibt, meint es
+  aktueller. Eine gewählte Kategorie räumt auch den `core.name`-Notnagel ab.
 - **Ein Profil ist eine Voreinstellung, keine Vorschrift.** `startClarification`
   hatte die Rangfolge umgekehrt (`profile?.target?.targetType ?? targetType`)
   und überschrieb damit genau das, was der Nutzer im Umschalter angeklickt
@@ -323,6 +330,11 @@ Things that will bite, roughly in order of how expensive the mistake is:
   never a path. Traefik does not serve the storage directory.
 - **Backups cover the database _and_ the storage directory.** A `pg_dump` alone
   leaves a catalogue of documents that no longer exist.
+- **`run --rm migrate` migriert mit dem zuletzt gebauten Image.** Wer nur
+  `build api worker` ausführt, startet die Migration mit einem Image, das die
+  neuen Migrationsdateien gar nicht enthält — die Spalte fehlt danach weiter,
+  und jede Route, die sie liest, antwortet 500. Vor dem Migrieren:
+  `./infra/alg.sh --profile tools build migrate`.
 - **Eine Migration ohne Journal-Eintrag läuft nie.** Drizzle führt aus, was in
   `migrations/meta/_journal.json` steht, nicht was im Ordner liegt. Eine von
   Hand geschriebene `.sql` ohne Eintrag wird beim Deploy stillschweigend
